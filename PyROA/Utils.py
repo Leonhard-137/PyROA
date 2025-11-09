@@ -809,94 +809,92 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
     
     kk = 0
     fac_flux = np.ones(len(wavelengths))
-    for i in range(len(filters)):
-        if ((filters[i] != delay_ref) ):
-            
-            file = datadir + objName+"_" + str(filters[i]) + ".dat"
-            data = np.loadtxt(file)
-            snu_mcmc = samples_chunks[i][0]
-            cnu_mcmc = samples_chunks[i][1]            
-            sig = np.percentile(samples_chunks[i][3], 50)
 
-            mc_pl = np.zeros((200,xx.size))
+    # 遍历所有滤光片
+    for i, flt in enumerate(filters):
+        # 移除参考滤光片跳过的条件，确保参考滤光片也参与计算
+        # if ((filters[i] != delay_ref))  <-- 移除这个条件
+        print(flt)
+        # 读取每个滤光片对应的 .dat 文件
+        file = datadir + objName + "_" + str(filters[i]) + ".dat"
+        data = np.loadtxt(file)
+        snu_mcmc = samples_chunks[i][0]
+        cnu_mcmc = samples_chunks[i][1]            
+        sig = np.percentile(samples_chunks[i][3], 50)
 
-            for lo in range(200):
-                jj = np.int(np.random.uniform(0,snu_mcmc.size))
-                mc_pl[lo] = cnu_mcmc[jj] + xx * snu_mcmc[jj]
-            
-            if filters[i] == gal_ref: 
-                x_gal_mcmc = -cnu_mcmc/snu_mcmc
-                x_gal = np.median(x_gal_mcmc)
-                x_gal_error = np.std(-cnu_mcmc/snu_mcmc)
-                
-            gal_spectrum_mcmc = np.median(cnu_mcmc) +  (x_gal_mcmc+x_gal_mcmc.std()) * np.median(snu_mcmc)
-            
-            gal_spectrum.append(gal_spectrum_mcmc.mean())
-            gal_spectrum_err.append(gal_spectrum_mcmc.std())
-            
-            fnu_f_mcmc = snu_mcmc * (np.min(norm_lc[1]) - x_gal_mcmc)
-            fnu_b_mcmc = snu_mcmc * (np.max(norm_lc[1]) - x_gal_mcmc)
-    
-            fnu_f.append(fnu_f_mcmc.mean())
-            fnu_f_err.append(fnu_f_mcmc.std())
+        # 初始化模拟光变数据
+        mc_pl = np.zeros((200, xx.size))
 
-            fnu_b.append(fnu_b_mcmc.mean())
-            fnu_b_err.append(fnu_b_mcmc.std())
+        # 生成 200 个模拟的光变曲线
+        for lo in range(200):
+            jj = int(np.random.uniform(0, snu_mcmc.size))
+            mc_pl[lo] = cnu_mcmc[jj] + xx * snu_mcmc[jj]
+        
+        # 计算银河光谱（如果当前滤光片是银河参考滤光片）
+        if filters[i] == gal_ref:
+            x_gal_mcmc = -cnu_mcmc / snu_mcmc
+            x_gal = np.median(x_gal_mcmc)
+            x_gal_error = np.std(-cnu_mcmc / snu_mcmc)
+        
+        # 计算银河光谱
+        gal_spectrum_mcmc = np.median(cnu_mcmc) +  (x_gal_mcmc + x_gal_mcmc.std()) * np.median(snu_mcmc)
+        gal_spectrum.append(gal_spectrum_mcmc.mean())
+        gal_spectrum_err.append(gal_spectrum_mcmc.std())
+        
+        # 计算 fnu_f 和 fnu_b
+        fnu_f_mcmc = snu_mcmc * (np.min(norm_lc[1]) - x_gal_mcmc)
+        fnu_b_mcmc = snu_mcmc * (np.max(norm_lc[1]) - x_gal_mcmc)
 
-            slope.append(np.median(snu_mcmc))
-            slope_err.append(np.std(snu_mcmc))
+        fnu_f.append(fnu_f_mcmc.mean())
+        fnu_f_err.append(fnu_f_mcmc.std())
 
-            lin_fit = np.median(snu_mcmc) * xx + np.median(cnu_mcmc)
-            
-            
-            if wavelengths != None:	   
+        fnu_b.append(fnu_b_mcmc.mean())
+        fnu_b_err.append(fnu_b_mcmc.std())
 
-                         
-                if (input_units != 'flam') and (output_units !='flam'):
-                    wave = wavelengths[i+kk] * u.Angstrom
-                    dd = funits
-                    #print(input_units,output_units)
-                    if output_units != 'fnu':
-                        fac_flux[i+kk] = dd.cgs.to(output_units).value
-                    else:
-                        fac_flux[i+kk] = dd.cgs.to('erg s^-1 cm^-2 Hz^-1').value
+        slope.append(np.median(snu_mcmc))
+        slope_err.append(np.std(snu_mcmc))
 
-                if (input_units != 'flam') and (output_units =='flam'):
-                    wave = wavelengths[i+kk] * u.Angstrom
-                    dd = funits/(wave**2)*ct.c
+        # 计算拟合直线
+        lin_fit = np.median(snu_mcmc) * xx + np.median(cnu_mcmc)
+        
+        # 光度单位转换
+        if wavelengths != None:
+            if (input_units != 'flam') and (output_units != 'flam'):
+                wave = wavelengths[i + kk] * u.Angstrom
+                dd = funits
+                if output_units != 'fnu':
+                    fac_flux[i + kk] = dd.cgs.to(output_units).value
+                else:
+                    fac_flux[i + kk] = dd.cgs.to('erg s^-1 cm^-2 Hz^-1').value
 
-                    #print(dd.cgs.to('erg/s/cm^2/Angstrom'))
-                    #print(funits.to('erg/s/cm**2/Hz'),wave,dd.cgs,fac_flux)
-                    fac_flux[i+kk] = dd.cgs.to('erg s^-1 cm^-2 Angstrom^-1').value/1e-15
+            if (input_units != 'flam') and (output_units == 'flam'):
+                wave = wavelengths[i + kk] * u.Angstrom
+                dd = funits / (wave ** 2) * ct.c
+                fac_flux[i + kk] = dd.cgs.to('erg s^-1 cm^-2 Angstrom^-1').value / 1e-15
 
-                    #fac_flux[i+kk] = dd.cgs.to('erg s^-1 cm^-2 Angstrom^-1').value
-                    #logo = int(np.log10(fnu_b[0]*fac_flux[0]))
-                    #print(fnu_b[i+kk]*fac_flux[i+kk],logo)
-                    #fac_flux[i+kk]= fac_flux[i+kk]*10**(logo)
+            if (input_units == 'flam') and (output_units != 'flam'):
+                wave = wavelengths[i + kk] * u.Angstrom
+                dd = funits / ct.c * (wave ** 2)
+                if output_units != 'fnu':
+                    fac_flux[i + kk] = dd.cgs.to(output_units).value
+                else:
+                    fac_flux[i + kk] = dd.cgs.to('erg s^-1 cm^-2 Hz^-1').value
 
-                if (input_units == 'flam') and (output_units !='flam'):
-                    wave = wavelengths[i+kk] * u.Angstrom
-                    dd = funits/ct.c*(wave**2)
-                    if output_units != 'fnu':
-                        fac_flux[i+kk] = dd.cgs.to(output_units).value
-                    else:
-                        fac_flux[i+kk] = dd.cgs.to('erg s^-1 cm^-2 Hz^-1').value
-
-                #print(i+kk,fac_flux)
-
-            plt.fill_between(xx,(mc_pl.mean(axis=0)+mc_pl.std(axis=0))*fac_flux[i+kk],
-                        (mc_pl.mean(axis=0)-mc_pl.std(axis=0))*fac_flux[i+kk],
+        # 绘制 Flux-Flux 图
+        plt.fill_between(xx, (mc_pl.mean(axis=0) + mc_pl.std(axis=0)) * fac_flux[i + kk],
+                        (mc_pl.mean(axis=0) - mc_pl.std(axis=0)) * fac_flux[i + kk],
                         color=band_colors[i],
                         alpha=0.3)
-            interp_xt = np.interp(data[:,0],norm_lc[0],norm_lc[1])
-            plt.errorbar(interp_xt,data[:,1]*fac_flux[i+kk],
-            			yerr=np.sqrt(data[:,2]**2+sig**2)*fac_flux[i+kk],
-            			color=band_colors[i],
-                        ls='None',alpha=0.8)
-            plt.plot(xx,lin_fit*fac_flux[i+kk],color=band_colors[i],lw=3)
-            max_flux = np.max([max_flux,np.max(data[:,1]*fac_flux[i+kk])])
-        else:
-        	kk = -1
+        
+        interp_xt = np.interp(data[:, 0], norm_lc[0], norm_lc[1])
+        plt.errorbar(interp_xt, data[:, 1] * fac_flux[i + kk],
+                    yerr=np.sqrt(data[:, 2] ** 2 + sig ** 2) * fac_flux[i + kk],
+                    color=band_colors[i],
+                    ls='None', alpha=0.8)
+        plt.plot(xx, lin_fit * fac_flux[i + kk], color=band_colors[i], lw=3)
+        max_flux = np.max([max_flux, np.max(data[:, 1] * fac_flux[i + kk])])
+
+    # 将计算结果转换为数组
     fnu_f = np.array(fnu_f)
     fnu_f_err = np.array(fnu_f_err)
     fnu_b = np.array(fnu_b)
@@ -906,68 +904,73 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
     gal_spectrum = np.array(gal_spectrum)
     gal_spectrum_err = np.array(gal_spectrum_err)
 
-    plt.axvline(x=np.median(x_gal_mcmc+x_gal_mcmc.std()),color='r',
-    			linestyle='-.',label=r'Galaxy')
-    plt.axvline(x=np.min(norm_lc[1]),color='k',
-    			linestyle='--',label=r'F$_{\rm faint}$')
-    plt.axvline(x=np.max(norm_lc[1]),color='grey',
-    			linestyle='--',label=r'F$_{\rm bright}$')
+    # 绘制 SED 图
+    plt.axvline(x=np.median(x_gal_mcmc + x_gal_mcmc.std()), color='r',
+                linestyle='-.', label=r'Galaxy')
+    plt.axvline(x=np.min(norm_lc[1]), color='k',
+                linestyle='--', label=r'F$_{\rm faint}$')
+    plt.axvline(x=np.max(norm_lc[1]), color='grey',
+                linestyle='--', label=r'F$_{\rm bright}$')
 
     lg = plt.legend(ncol=4)
-    plt.xlim(x_gal-1,3)
-    #print()
-    plt.ylim(-0.04*fac_flux[-1],max_flux*1.2)
-    if limits != None: plt.ylim(-0.04,limits[1])
-    
+    plt.xlim(x_gal - 1, 3)
+    plt.ylim(-0.04 * fac_flux[-1], max_flux * 1.2)
+
+    if limits != None:
+        plt.ylim(-0.04, limits[1])
+
     plt.xlabel(r'$X_0 (t)$, Normalised driving light curve flux')
     plt.ylabel(ylab)
     plt.tight_layout()
 
     if savefig:
-        if figname == None: figname = 'pyroa'
-        plt.savefig(figname+'_fluxflux.pdf')
-	
+        if figname == None:
+            figname = 'pyroa'
+        plt.savefig(figname + '_fluxflux.pdf')
 
+    # 绘制 SED 图
     if wavelengths != None:
         wave = np.array(wavelengths)
-        fig = plt.figure(figsize=(10,7))
+        fig = plt.figure(figsize=(10, 7))
         ax = fig.add_subplot(111)
-        xxx = np.arange(2000,9300)
-        #plt.plot(xxx, 0.2*(xxx/3800)**(-7/3.)*(xxx**2/2.998e18)/1e-9*1000,'-',color='#6ab04c',
-        #         label=r'F$_{\nu}\propto\lambda^{-1/3}$',lw=2)
-        
-        # AGN variability range
-        plt.fill_between(wave/(1+redshift),(np.array(unred(wave,fnu_b,ebv)))*fac_flux,
-        				(np.array(unred(wave,fnu_f,ebv)))*fac_flux
-                     	,color='k',alpha=0.1,label='AGN variability')
-        ### F_bright - F_faint
-        plt.errorbar(wave/(1+redshift),(np.array(unred(wave,fnu_b,ebv)) - \
-                                    np.array(unred(wave,fnu_f,ebv)))*fac_flux,
-                 yerr=np.sqrt((np.array(fnu_f_err))**2 + (np.array(fnu_b_err))**2)*fac_flux,
-                 marker='.',linestyle='-',color='k',
-                 label=r'F$_{\rm bright}$ - F$_{\rm faint}$',ms=15)
+        xxx = np.arange(2000, 9300)
 
-        ### AGN RMS
-        plt.errorbar(wave/(1+redshift),np.array(unred(wave,slope,ebv))*fac_flux,
-             yerr=0,marker='o',linestyle='--',color='grey',label='AGN RMS')
-        
-        ### Galaxy spectrum
-        plt.errorbar(wave/(1+redshift),unred(wave,gal_spectrum,ebv)*fac_flux,
-                 yerr=gal_spectrum_err*fac_flux,
-                 marker='s',color='r',label='Galaxy',linestyle='-.')
+        # 绘制 AGN 变异范围
+        plt.fill_between(wave / (1 + redshift),
+                        (np.array(unred(wave, fnu_b, ebv))) * fac_flux,
+                        (np.array(unred(wave, fnu_f, ebv))) * fac_flux,
+                        color='k', alpha=0.1, label='AGN variability')
 
-        #print(fac_flux)
+        # 绘制 F_bright - F_faint
+        plt.errorbar(wave / (1 + redshift), (np.array(unred(wave, fnu_b, ebv)) -
+                                            np.array(unred(wave, fnu_f, ebv))) * fac_flux,
+                    yerr=np.sqrt((np.array(fnu_f_err)) ** 2 + (np.array(fnu_b_err)) ** 2) * fac_flux,
+                    marker='.', linestyle='-', color='k',
+                    label=r'F$_{\rm bright}$ - F$_{\rm faint}$', ms=15)
+
+        # 绘制 AGN RMS
+        plt.errorbar(wave / (1 + redshift), np.array(unred(wave, slope, ebv)) * fac_flux,
+                    yerr=0, marker='o', linestyle='--', color='grey', label='AGN RMS')
+
+        # 绘制银河光谱
+        plt.errorbar(wave / (1 + redshift), unred(wave, gal_spectrum, ebv) * fac_flux,
+                    yerr=gal_spectrum_err * fac_flux,
+                    marker='s', color='r', label='Galaxy', linestyle='-.')
+
         plt.xscale('log')
         plt.yscale('log')
-        plt.xlim(np.min(wave/(1+redshift))-100,np.max(wave/(1+redshift))+100)
-        #print(np.min(np.array(unred(wave,slope,ebv)))*0.7,max_flux*1.2)
-        plt.ylim(np.min(np.array(unred(wave,slope,ebv)))*0.7*fac_flux[-1],max_flux*1.2)
-        if limits != None: plt.ylim(limits[0],limits[1])
+        plt.xlim(np.min(wave / (1 + redshift)) - 100, np.max(wave / (1 + redshift)) + 100)
+        plt.ylim(np.min(np.array(unred(wave, slope, ebv))) * 0.7 * fac_flux[-1], max_flux * 1.2)
+
+        if limits != None:
+            plt.ylim(limits[0], limits[1])
+
         lg = plt.legend(ncol=2)
         if redshift > 0:
             plt.xlabel(r'Rest Wavelength / $\mathrm{\AA}$')
         else:
             plt.xlabel(r'Observed Wavelength / $\mathrm{\AA}$')
+
         plt.ylabel(ylab)
 
         ax.yaxis.set_major_formatter(mtick.FormatStrFormatter('%.2f'))
@@ -975,33 +978,38 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
         ax.xaxis.set_minor_formatter(mtick.FormatStrFormatter('%.0f'))
         ax.xaxis.set_minor_locator(ticker.MultipleLocator(2000))
         plt.tight_layout()
+
         if savefig:
-            if figname == None: figname = 'pyroa_SED.pdf'
-            plt.savefig(figname+'_SED.pdf')
+            if figname == None:
+                figname = 'pyroa_SED.pdf'
+            plt.savefig(figname + '_SED.pdf')
+
     else:
         print(' [PyROA] No wavelength list. Skipping SED plot.')
-        # Create output file from flux-flux analysis
-    #print(wave)
-    d = {'wave': wave, 
-    	'agn_b': np.array(fnu_b),
-    	'agn_b_err': np.array(fnu_b_err),
-    	'agn_f': np.array(fnu_f),
-    	'agn_f_err': np.array(fnu_f_err),
-    	'agn_rms': np.array(slope),
-    	'agn_rms_err':np.array(slope_err),
-    	'gal': np.array(gal_spectrum),
-    	'gal_err': np.array(gal_spectrum_err),
-    	'unred_agn_b': np.array(unred(wave,fnu_b,ebv)),
-    	'unred_agn_b_err': np.array(unred(wave,fnu_b_err,ebv)),
-    	'unred_agn_f': np.array(unred(wave,fnu_f,ebv)),
-    	'unred_agn_f_err': np.array(unred(wave,fnu_f_err,ebv)),
-    	'unred_agn_rms': np.array(unred(wave,slope,ebv)),
-    	'unred_agn_rms_err':np.array(unred(wave,slope_err,ebv)),
-    	'unred_gal': np.array(unred(wave,gal_spectrum,ebv)),
-    	'unred_gal_err': np.array(unred(wave,gal_spectrum_err,ebv))}
+
+    # 输出 fluxflux 数据
+    d = {'wave': wave,
+        'agn_b': np.array(fnu_b),
+        'agn_b_err': np.array(fnu_b_err),
+        'agn_f': np.array(fnu_f),
+        'agn_f_err': np.array(fnu_f_err),
+        'agn_rms': np.array(slope),
+        'agn_rms_err': np.array(slope_err),
+        'gal': np.array(gal_spectrum),
+        'gal_err': np.array(gal_spectrum_err),
+        'unred_agn_b': np.array(unred(wave, fnu_b, ebv)),
+        'unred_agn_b_err': np.array(unred(wave, fnu_b_err, ebv)),
+        'unred_agn_f': np.array(unred(wave, fnu_f, ebv)),
+        'unred_agn_f_err': np.array(unred(wave, fnu_f_err, ebv)),
+        'unred_agn_rms': np.array(unred(wave, slope, ebv)),
+        'unred_agn_rms_err': np.array(unred(wave, slope_err, ebv)),
+        'unred_gal': np.array(unred(wave, gal_spectrum, ebv)),
+        'unred_gal_err': np.array(unred(wave, gal_spectrum_err, ebv))}
     df = DataFrame(data=d)
-    if figname == None: figname = 'pyroa' 
-    df.to_csv(figname+'_fluxflux.csv',index=False)
+    if figname == None:
+        figname = 'pyroa'
+    df.to_csv(figname + '_fluxflux.csv', index=False)
+
 
 
 def Convergence(outputdir='./',samples_file='samples_flat.obj',burnin=0,

@@ -1,0 +1,17 @@
+Metadata-Version: 2.2
+Name: PyROA
+Version: 3.3.0
+Summary: PyROA is a tool for modelling quasar lightcurves
+Home-page: https://github.com/FergusDonnan/PyROA
+Author: Fergus Donnan,
+Author-email: fergus.donnan@physics.ox.ac.uk
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Description-Content-Type: text/markdown
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: summary
