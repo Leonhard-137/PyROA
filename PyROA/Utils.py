@@ -10,6 +10,8 @@ import matplotlib.ticker as ticker
 import astropy.units as u
 import astropy.constants as ct
 from pandas import DataFrame
+import matplotlib.ticker as mtick
+import scipy.optimize as opt
 
 def Chains(nparam,filters,delay_ref,
 				burnin=0, samples_file='samples_flat.obj',
@@ -368,288 +370,278 @@ def LagSpectrum(filters,delay_ref,wavelengths,
 		if figname == None: figname = 'pyroa_lagspectrum.pdf'
 		plt.savefig(figname)
 
-def Lightcurves(objName, filters, delay_ref, 
-				lc_file="Lightcurve_models.obj",
-				samples_file='samples_flat.obj',
-				slow_comp_file='Slow_Comps.obj',
-				outputdir = './', datadir='./',
-				burnin=0, band_colors = None,
-				limits=None, grid=False, grid_step=5.0,
-				show_delay_ref=False, ylab = None,
-				filter_labels = None, savefig=True, figname=None,
-				include_slow_comp=False,slow_comp_delta=30.0
-				):
-	"""Plots the Lightcurve data and best fit as measured by PyROA
+def Lightcurves(objName, filters, delay_ref,
+                lc_file="Lightcurve_models.obj",
+                samples_file='samples_flat.obj',
+                slow_comp_file='Slow_Comps.obj',
+                outputdir='./', datadir='./',
+                burnin=0, band_colors=None,
+                limits=None, grid=False, grid_step=5.0,
+                show_delay_ref=False, ylab=None,
+                filter_labels=None, savefig=True, figname=None,
+                include_slow_comp=False, slow_comp_delta=30.0):
+    """Plots the Lightcurve data and best fit as measured by PyROA
+    （原始 docstring 略）
+    """
 
-    Parameters
-    ----------
-    objName : str
-        Name used in PyROA for the data files.
-    filters : list
-        List of filters used in the PyROA fit.
-    delay_ref : str
-        Name of the filter used as the reference. Must be contained in
-        "filters".
+    plt.rcParams.update({
+        "font.family": "Serif",
+        "font.serif": ["Times New Roman"],
+        "figure.figsize": [40, 30],
+        "font.size": 19
+    })
 
-    lc_file : str, optional
-        File name of lightcurve models. Default: "Lightcurve_models.obj"
-        This is the PyROA standard output.
-    samples_file : str, optional
-        File name of the MCMC samples. Default: "samples_flat.obj"
-        This is the PyROA standard output.
-    outputdir : str, optional
-        Directory path where PyROA "*.obj" are stored. 
-        This is the PyROA standard output. Default: Current directory "./"
-    datadir : str, optional
-        Directory path where PyROA "*.dat" are stored. 
-        This is the PyROA standard input. Default: Current directory "./"
-	burnin : float, optional
-        Number of samples to discard in the fit, from 0 to burnin.
-        This cut is applied to the samples_flat.obj.
-        Use the "convergence" or "chains" plots to determine this 
-        number.  Default: 0
-    band_colors : list, optional
-        List of colours for each filter. List must be the same size as
-        the filters array. Default: all lightcurves will be black.
-    limits : list[2], optional
-        Limits on the shared X-axis of all plots e.g., [xmin,xmax]
-        Default: It is determined by the data.
-    grid : bool, optional
-        Display vertical lines every "grid_step" units. Default: False
-    grid_step : float, optional
-        Step size in units of the X-axis to display the grid. Default: 5.0
-    show_delay_ref : bool, optional
-        Display the reference band. Default: False
-    ylab : str, optional
-        Label of Y-axis. Default: "F$_{\nu}$"+"\nmJy"
-    filter_labels : list, optional
-        List of filter names that overrides the original names as given by
-        "filters" one. Default: None.
-    savefig : bool, optional
-        Save figure as a PDF Default: True.
-    figname : str, optional
-        Name of the figure to be saved. If not provided, the default
-        name is 'pyroa_lightcurves.pdf'
+    if outputdir[-1] != '/':
+        outputdir += '/'
+    if datadir[-1] != '/':
+        datadir += '/'
 
-    Returns
-    -------
-    None
+    if ylab is None:
+        ylab = r"F$_{\nu}$" + "\nmJy"
+    if filter_labels is None:
+        filter_labels = filters
 
-    Example
-    -------
-	import pyroa_utils
-	
-	filters = ["u","g","r","i","z"] 
-	band_colors=['#0652DD','#1289A7','#006266','#006266','#A3CB38']
+    ss = np.where(np.array(filters) == delay_ref)[0][0]
 
-	pyroa_utils.lightcurves('NGC7469',filters,'g', datadir='./data/',
-				burnin=150000, band_colors=band_colors, grid=True,
-				show_delay_ref=False)
-	"""
-	plt.rcParams.update({
-	    "font.family": "Serif",  
-	    "font.serif": ["Times New Roman"],
-	"figure.figsize":[40,30],
-	"font.size": 19})  
+    # 读 MCMC 样本 & 模型
+    with open(outputdir + samples_file, 'rb') as f:
+        samples_flat = pickle.load(f)
+    samples_flat = samples_flat[burnin:, :]
 
-	if outputdir[-1] != '/': outputdir += '/'
+    with open(outputdir + lc_file, 'rb') as f:
+        models = pickle.load(f)
 
-	if ylab ==None: ylab = r"F$_{\nu}$"+"\nmJy"
-	if filter_labels == None: filter_labels = filters
+    if include_slow_comp:
+        with open(outputdir + slow_comp_file, 'rb') as f:
+            slow_comps = pickle.load(f)
 
-	ss = np.where(np.array(filters) == delay_ref)[0][0]
-	file = open(outputdir+samples_file,'rb')
-	samples_flat = pickle.load(file)
-	samples_flat = samples_flat[burnin:,:]
-	file = open(outputdir+lc_file,'rb')
-	models = pickle.load(file)
+    # 按 A, B, tau, sig 切 chunk
+    chunk_size = 4
+    transpose_samples = np.transpose(samples_flat)
+    # 在参考滤光片的位置插入 tau=0
+    transpose_samples = np.insert(
+        transpose_samples,
+        [ss * 4 + 2],
+        np.array([0.0] * len(transpose_samples[1])),
+        axis=0
+    )
+    samples_chunks = [
+        transpose_samples[i:i + chunk_size]
+        for i in range(0, len(transpose_samples), chunk_size)
+    ]
 
-	if include_slow_comp:
-		file = open(outputdir+slow_comp_file,'rb')
-		slow_comps = pickle.load(file)
+    # 准备画布：每个滤光片两列（左：lightcurve/residual，右：lag posterior）
+    fig = plt.figure(figsize=(20, len(filters) * 3.5))
+    corro = 1
+    if show_delay_ref:
+        corro = 0
 
+    gs = fig.add_gridspec(len(filters) - corro, 2, hspace=0, wspace=0,
+                          width_ratios=[5, 1])
+    axs = gs.subplots(sharex='col')
 
-	#Split samples into chunks, 4 per lightcurve i.e A, B, tau, sig
-	chunk_size=4
-	transpose_samples = np.transpose(samples_flat)
-	#Insert zero where tau_0 would be 
-	transpose_samples = np.insert(transpose_samples, [ss*4+2], np.array([0.0]*len(transpose_samples[1])), axis=0)
-	samples_chunks = [transpose_samples[i:i + chunk_size] for i in range(0, len(transpose_samples), chunk_size)] 
+    if band_colors is None:
+        band_colors = ['k'] * len(filters)
 
+    data = []
+    ko = 0
 
+    if limits is not None:
+        xmin = limits[0]
+        xmax = limits[1]
 
-	fig = plt.figure(figsize=(20,len(filters)*3.5))
-	corro = 1
-	if show_delay_ref: corro = 0
-	#print(len(filters)-corro,corro)
-	gs = fig.add_gridspec(len(filters)-corro, 2, hspace=0, wspace=0, width_ratios=[5, 1])
-	axs= gs.subplots(sharex='col')
+    # ======================== 主循环：逐滤光片处理 ========================
+    for i in range(len(filters)):
+        # 读数据
+        file = datadir + objName + "_" + str(filters[i]) + ".dat"
+        this_data = np.loadtxt(file)
+        data.append(this_data)
 
-	if band_colors == None:
-		band_colors = ['k']*len(filters)
-	#band_colors=['#0652DD','#1289A7','#006266','#006266','#A3CB38','orange','#EE5A24','brown']
+        mjd = this_data[:, 0]
+        flux = this_data[:, 1]
+        err = this_data[:, 2]
 
-	#Loop over lightcurves
+        if (i == 0) and (limits is None):
+            xmin = np.nanmin(mjd) - 10
+            xmax = np.nanmax(mjd) + 10
 
-	data=[]
-	ko = 0
+        # 额外方差（sig）并入误差
+        B = np.percentile(samples_chunks[i][1], 50)
+        sig = np.percentile(samples_chunks[i][3], 50)
+        err = np.sqrt(err**2 + sig**2)
 
-	if limits !=None:
-		xmin=limits[0]#59337
-		xmax=limits[1]#59621
+        # 非参考滤光片，或者显示参考滤光片
+        if filters[i] != delay_ref:
 
-	for i in range(len(filters)):
-	    #Read in data
-	    #print(filters[i],i)
-	    file = datadir + objName+"_" + str(filters[i]) + ".dat"
-	    data.append(np.loadtxt(file))
-	    mjd = data[i][:,0]
-	    flux = data[i][:,1]
-	    err = data[i][:,2]    
+            # 在左侧大格子 gs[i-ko, 0] 里再切一列 6x1 的子格子
+            gs00 = gridspec.GridSpecFromSubplotSpec(
+                6, 1, subplot_spec=gs[i - ko, 0], hspace=0
+            )
+            ax1 = fig.add_subplot(gs00[:-2, :])  # lightcurve
+            ax2 = fig.add_subplot(gs00[-2:, :])  # residuals
 
-	    if (i == 0) & (limits == None):
-	    	xmin = np.nanmin(mjd)-10
-	    	xmax = np.nanmax(mjd)+10
-	    #Add extra variance
-	    B = np.percentile(samples_chunks[i][1], 50)
-	    sig = np.percentile(samples_chunks[i][3], 50)
-	    err = np.sqrt(err**2 + sig**2)
+            # y 轴范围用 MAD 控制
+            ax1.set_ylim(
+                np.median(flux) - 4.8 * mad(flux),
+                np.median(flux) + 4.8 * mad(flux)
+            )
 
-	    
-	    #print(filters[i],show_delay_ref,i-ko)
-	    if ((filters[i] != delay_ref) ):
+            if i < len(filters) - 1:
+                ax2.set_xticklabels([])
+            else:
+                ax2.set_xlabel("MJD")
+            ax1.set_xticklabels([])
+            axs[i - ko][0].set_yticklabels([])
 
-	        gs00 = gridspec.GridSpecFromSubplotSpec(6, 1, subplot_spec=axs[i-ko][0],hspace=0)
-	        ax1 = fig.add_subplot(gs00[:-2, :])
-	        ax2 = fig.add_subplot(gs00[-2:, :])
-	        
-	        ax1.set_ylim(np.median(flux)-4.8*mad(flux),np.median(flux)+4.8*mad(flux))
-	        #ax1.set_ylim(0,50)
-	        #ax2.set_yticklabels([])
-	        if i < len(filters)-1:
-	            
-	            ax2.set_xticklabels([])
-	        else:
-	            ax2.set_xlabel("MJD")
-	        ax1.set_xticklabels([])
-	        #ax2.set_yticklabels([])
-	        axs[i-ko][0].set_yticklabels([])
-	        #Plot Data
-	        ax1.errorbar(mjd, flux , yerr=err, ls='none', marker=".", color=band_colors[i], ms=2)
-	        #Plot Model
-	        t, m, errs = models[i]
-	        new_m = np.interp(mjd,t, m)
-	        ax2.axhline(y=0,ls='--',color='k')
-	        ax2.errorbar(mjd,(flux-new_m)/err,yerr=1, ls='none', marker=".", color=band_colors[i], ms=2)
+            # 画数据
+            ax1.errorbar(
+                mjd, flux, yerr=err,
+                ls='none', marker=".", color=band_colors[i], ms=2
+            )
 
-	        ax2.set_ylim(-4.9,4.9)
-	        
-	        if grid:
-	            for hh in np.arange(59330,xmax,grid_step):
-	                ax1.axvline(x=hh,ls='--',color='grey',alpha=0.4)
-	            
-	        ax2.set_xlim(xmin,xmax)
-	        ax1.set_xlim(xmin,xmax)
-	        
-	        ax1.plot(t,m, color="black", lw=3)
+            # 画模型 & 残差
+            t, m, errs = models[i]
+            new_m = np.interp(mjd, t, m)
 
-	        if (include_slow_comp == True):
-	            slow_comp = slow_comps[i]
-	            
-	            ax1.plot(mjd, slow_comp(mjd)+B, linestyle="dashed", color="black")   
-	        #filto = filters[i]
-	        filto = filter_labels[i]
-	        #if filters[i] =='g1': filto = 'g'
-		# Catch infinite errorbars	        
-	        inf_mask  = errs == np.inf	        
-	        errs[inf_mask] = 1e32
-	        inf_mask  = errs == -np.inf
-	        errs[inf_mask] = -1e32
-		
-	        ax1.text(0.1,0.2,filto, color=band_colors[i], fontsize=19, transform=ax1.transAxes)
-	        ax1.fill_between(t, m+errs, m-errs, alpha=0.5, color="black")
-	        #ax1.set_xlabel("Time")
-	        ax1.set_ylabel(ylab)
-	        ax2.set_ylabel(r"$\chi$")
-	        #axs[i][0].axhline(y=np.percentile(samples_chunks[i][1], [16, 50, 84])[1],ls='--')
+            ax2.axhline(y=0, ls='--', color='k')
+            ax2.errorbar(
+                mjd, (flux - new_m) / err, yerr=1,
+                ls='none', marker=".", color=band_colors[i], ms=2
+            )
+            ax2.set_ylim(-4.9, 4.9)
 
-	        #Plot Time delay posterior distributions
-	        tau_samples = samples_chunks[i][2],
-	        axs[i-ko][1].hist(tau_samples, color=band_colors[i], bins=50,histtype='stepfilled')
-	        axs[i-ko][1].axvline(x = np.percentile(tau_samples, [16, 50, 84])[1], color="black")
-	        axs[i-ko][1].axvline(x = np.percentile(tau_samples, [16, 50, 84])[0] , color="black", ls="--")
-	        axs[i-ko][1].axvline(x = np.percentile(tau_samples, [16, 50, 84])[2], color="black",ls="--")
-	        axs[i-ko][1].axvline(x = 0, color="grey",ls="-")    
-	        axs[i-ko][1].set_xlabel("Time Delay ")
-	        axs[i-ko][1].set_yticklabels([])
-	        axs[i-ko][1].axes.get_yaxis().set_visible(False)
-	        axs[i-ko][0].set_xticklabels([])
-	        
-	        axs[0][0].set_title(objName)
-	        axs[0][1].set_title("Time Delay")
+            if grid:
+                for hh in np.arange(59330, xmax, grid_step):
+                    ax1.axvline(x=hh, ls='--', color='grey', alpha=0.4)
 
+            ax1.set_xlim(xmin, xmax)
+            ax2.set_xlim(xmin, xmax)
 
-	    if (filters[i] == delay_ref):
-	        
-	        if ((show_delay_ref == True)):
-	            gs00 = gridspec.GridSpecFromSubplotSpec(6, 1, subplot_spec=axs[i-ko][0],hspace=0)
-	            ax1 = fig.add_subplot(gs00[:-2, :])
-	            ax2 = fig.add_subplot(gs00[-2:, :])
-	            ax1.set_ylim(np.median(flux)-4.8*mad(flux),np.median(flux)+4.8*mad(flux))
-	            #ax2.set_yticklabels([])
-	            if i < len(filters)-1:
-	                
-	                ax2.set_xticklabels([])
-	            else:
-	                ax2.set_xlabel("MJD")
-	            ax1.set_xticklabels([])
-	            #ax2.set_yticklabels([])
-	            axs[i-ko][0].set_yticklabels([])
-	            #Plot Data
-	            ax1.errorbar(mjd, flux , yerr=err, ls='none', marker=".", color=band_colors[i], ms=2)
-	            #Plot Model
-	            t, m, errs = models[i]
-	            new_m = np.interp(mjd,t, m)
-	            ax2.axhline(y=0,ls='--',color='k')
-	            ax2.errorbar(mjd,(flux-new_m)/err,yerr=1, ls='none', marker=".", color=band_colors[i], ms=2)
+            ax1.plot(t, m, color="black", lw=3)
 
-	            ax2.set_ylim(-4.9,4.9)
-	            
-	            if grid:
-	                for hh in np.arange(59330,xmax,5):
-	                    ax1.axvline(x=hh,ls='--',color='grey',alpha=0.4)
-	                
-	            ax2.set_xlim(xmin,xmax)
-	            ax1.set_xlim(xmin,xmax)
-	            
-	            ax1.plot(t,m, color="black", lw=3)
-	            #filto = filters[i]
-	            filto = filter_labels[i]
-	            #if filters[i] =='g1': filto = 'g'
-		    # Catch infinite errorbars	        
-	            inf_mask  = errs == np.inf	        
-	            errs[inf_mask] = 1e32
-	            inf_mask  = errs == -np.inf
-	            errs[inf_mask] = -1e32
-	            ax1.text(0.1,0.2,filto, color=band_colors[i], fontsize=19, transform=ax1.transAxes)
-	            ax1.fill_between(t, m+errs, m-errs, alpha=0.5, color="black")
-	            #ax1.set_xlabel("Time")
-	            ax1.set_ylabel(ylab)
-	            ax2.set_ylabel(r"$\chi$")
-	            #ax2 = fig.add_subplot(gs00[-2:, :])
-	            #print('   --> Skipping')
-	            ko =0
-	        else:
-	            ko=1
-	            	        
-	for ax in axs.flat:
-	    ax.label_outer()    
+            # 慢变成分
+            if include_slow_comp:
+                slow_comp = slow_comps[i]
+                ax1.plot(mjd, slow_comp(mjd) + B,
+                         linestyle="dashed", color="black")
 
-	#plt.tight_layout()
-	#plt.savefig('NGC_7469_pyroa_fit_residual.pdf')
-	if savefig:
-		if figname == None: figname = 'pyroa_lightcurves.pdf'
-		plt.savefig(figname)
+            filto = filter_labels[i]
+
+            # 处理可能的 inf 模型误差
+            inf_mask = errs == np.inf
+            errs[inf_mask] = 1e32
+            inf_mask = errs == -np.inf
+            errs[inf_mask] = -1e32
+
+            ax1.text(
+                0.1, 0.2, filto,
+                color=band_colors[i], fontsize=19,
+                transform=ax1.transAxes
+            )
+            ax1.fill_between(
+                t, m + errs, m - errs,
+                alpha=0.5, color="black"
+            )
+            ax1.set_ylabel(ylab)
+            ax2.set_ylabel(r"$\chi$")
+
+            # 右侧：时间延迟后验直方图
+            tau_samples = samples_chunks[i][2]
+            axs[i - ko][1].hist(
+                tau_samples, color=band_colors[i],
+                bins=50, histtype='stepfilled'
+            )
+            q16, q50, q84 = np.percentile(tau_samples, [16, 50, 84])
+            axs[i - ko][1].axvline(x=q50, color="black")
+            axs[i - ko][1].axvline(x=q16, color="black", ls="--")
+            axs[i - ko][1].axvline(x=q84, color="black", ls="--")
+            axs[i - ko][1].axvline(x=0, color="grey", ls="-")
+            axs[i - ko][1].set_xlabel("Time Delay")
+            axs[i - ko][1].set_yticklabels([])
+            axs[i - ko][1].axes.get_yaxis().set_visible(False)
+            axs[i - ko][0].set_xticklabels([])
+
+            axs[0][0].set_title(objName)
+            axs[0][1].set_title("Time Delay")
+
+        # 参考滤光片
+        if filters[i] == delay_ref:
+
+            if show_delay_ref:
+                gs00 = gridspec.GridSpecFromSubplotSpec(
+                    6, 1, subplot_spec=gs[i - ko, 0], hspace=0
+                )
+                ax1 = fig.add_subplot(gs00[:-2, :])
+                ax2 = fig.add_subplot(gs00[-2:, :])
+
+                ax1.set_ylim(
+                    np.median(flux) - 4.8 * mad(flux),
+                    np.median(flux) + 4.8 * mad(flux)
+                )
+
+                if i < len(filters) - 1:
+                    ax2.set_xticklabels([])
+                else:
+                    ax2.set_xlabel("MJD")
+                ax1.set_xticklabels([])
+                axs[i - ko][0].set_yticklabels([])
+
+                ax1.errorbar(
+                    mjd, flux, yerr=err,
+                    ls='none', marker=".", color=band_colors[i], ms=2
+                )
+
+                t, m, errs = models[i]
+                new_m = np.interp(mjd, t, m)
+                ax2.axhline(y=0, ls='--', color='k')
+                ax2.errorbar(
+                    mjd, (flux - new_m) / err, yerr=1,
+                    ls='none', marker=".", color=band_colors[i], ms=2
+                )
+                ax2.set_ylim(-4.9, 4.9)
+
+                if grid:
+                    for hh in np.arange(59330, xmax, 5):
+                        ax1.axvline(x=hh, ls='--',
+                                    color='grey', alpha=0.4)
+
+                ax1.set_xlim(xmin, xmax)
+                ax2.set_xlim(xmin, xmax)
+
+                ax1.plot(t, m, color="black", lw=3)
+
+                filto = filter_labels[i]
+
+                inf_mask = errs == np.inf
+                errs[inf_mask] = 1e32
+                inf_mask = errs == -np.inf
+                errs[inf_mask] = -1e32
+
+                ax1.text(
+                    0.1, 0.2, filto,
+                    color=band_colors[i], fontsize=19,
+                    transform=ax1.transAxes
+                )
+                ax1.fill_between(
+                    t, m + errs, m - errs,
+                    alpha=0.5, color="black"
+                )
+                ax1.set_ylabel(ylab)
+                ax2.set_ylabel(r"$\chi$")
+
+                ko = 0
+            else:
+                # 不单独画参考滤光片：后面索引要减一
+                ko = 1
+
+    for ax in axs.flat:
+        ax.label_outer()
+
+    if savefig:
+        if figname is None:
+            figname = 'pyroa_lightcurves.pdf'
+        plt.savefig(figname)
+
 
 def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
             lc_file="Lightcurve_models.obj",
@@ -696,7 +688,7 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
     datadir : str, optional
         Directory path where PyROA "*.dat" are stored. 
         This is the PyROA standard input. Default: Current directory "./"
-	burnin : float, optional
+    burnin : float, optional
         Number of samples to discard in the fit, from 0 to burnin.
         This cut is applied to the samples_flat.obj.
         Use the "convergence" or "chains" plots to determine this 
@@ -764,7 +756,8 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
         "font.serif": ["Times New Roman"],
     "figure.figsize":[40,30],
     "font.size": 19})  
-
+	
+    # To Do: 改成Path
     if outputdir[-1] != '/': outputdir += '/'
     if ylab ==None: ylab = r"F$_{\nu}$"+" / mJy"
     #if filter_labels == None: filter_labels = filters
@@ -774,13 +767,13 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
     if input_units == 'fnu': funits = 1*u.erg/u.s/(u.cm**2)/u.Hz
     if input_units == 'flam': funits = 1*u.erg/u.s/(u.cm**2)/u.Angstrom
     if output_units == 'mJy': 
-    	ylab = r"F$_{\nu}$"+" / mJy"
+        ylab = r"F$_{\nu}$"+" / mJy"
     if output_units == 'Jy': 
-    	ylab = r"F$_{\nu}$"+" / Jy"
+        ylab = r"F$_{\nu}$"+" / Jy"
     if output_units == 'fnu': 
-    	ylab = r"F$_{\nu}$"+r" / erg s$^{-1}$ cm$^{-2}$ ${\rm Hz}^{-1}$"
+        ylab = r"F$_{\nu}$"+r" / erg s$^{-1}$ cm$^{-2}$ ${\rm Hz}^{-1}$"
     if output_units == 'flam': 
-    	ylab = r"F$_{\lambda}$"+r" / $\times10^{-15}$ erg s$^{-1}$ cm$^{-2}$ ${\rm \AA}^{-1}$"
+        ylab = r"F$_{\lambda}$"+r" / $\times10^{-15}$ erg s$^{-1}$ cm$^{-2}$ ${\rm \AA}^{-1}$"
 
     ss = np.where(np.array(filters) == delay_ref)[0][0]
     file = open(outputdir+samples_file,'rb')
@@ -804,97 +797,102 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
     fnu_f_err,fnu_b_err = [], []
     
     fig = plt.figure(figsize=(10,7))
-    xx = np.linspace(-15,5,300)
+    xx = np.linspace(-15,5,300) # ？？？
     max_flux = 0.0
     
-    kk = 0
     fac_flux = np.ones(len(wavelengths))
 
-    # 遍历所有滤光片
+    # ---- 基于 gal_ref 预先计算 x_gal_mcmc（供所有滤光片复用）----
+    if gal_ref not in filters:
+        raise ValueError(f"gal_ref='{gal_ref}' 不在 filters 列表中")
+
+    j_gal = filters.index(gal_ref)
+    snu_gal = samples_chunks[j_gal][0]
+    cnu_gal = samples_chunks[j_gal][1]
+
+    # 计算 x_gal_mcmc，并屏蔽除零/无效
+    with np.errstate(divide='ignore', invalid='ignore'):
+        x_gal_mcmc_full = -cnu_gal / snu_gal
+    x_gal_mcmc = x_gal_mcmc_full[np.isfinite(x_gal_mcmc_full)]
+    if x_gal_mcmc.size == 0:
+        raise ValueError("x_gal_mcmc 全为非数值；请检查 gal_ref 的样本（可能 s=0）。")
+
+    x_gal     = np.median(x_gal_mcmc)
+    x_gal_std = np.std(x_gal_mcmc)
+
+    # ---- 主循环：包含参考波段；不再使用 kk ----
+    fac_flux = np.ones(len(wavelengths), dtype=float)
+
     for i, flt in enumerate(filters):
-        # 移除参考滤光片跳过的条件，确保参考滤光片也参与计算
-        # if ((filters[i] != delay_ref))  <-- 移除这个条件
-        print(flt)
         # 读取每个滤光片对应的 .dat 文件
-        file = datadir + objName + "_" + str(filters[i]) + ".dat"
+        file = datadir + objName + "_" + str(flt) + ".dat"
         data = np.loadtxt(file)
         snu_mcmc = samples_chunks[i][0]
-        cnu_mcmc = samples_chunks[i][1]            
+        cnu_mcmc = samples_chunks[i][1]
         sig = np.percentile(samples_chunks[i][3], 50)
 
-        # 初始化模拟光变数据
+        # 初始化并生成 200 条模拟直线
         mc_pl = np.zeros((200, xx.size))
-
-        # 生成 200 个模拟的光变曲线
         for lo in range(200):
             jj = int(np.random.uniform(0, snu_mcmc.size))
             mc_pl[lo] = cnu_mcmc[jj] + xx * snu_mcmc[jj]
-        
-        # 计算银河光谱（如果当前滤光片是银河参考滤光片）
-        if filters[i] == gal_ref:
-            x_gal_mcmc = -cnu_mcmc / snu_mcmc
-            x_gal = np.median(x_gal_mcmc)
-            x_gal_error = np.std(-cnu_mcmc / snu_mcmc)
-        
-        # 计算银河光谱
-        gal_spectrum_mcmc = np.median(cnu_mcmc) +  (x_gal_mcmc + x_gal_mcmc.std()) * np.median(snu_mcmc)
+
+        # 若长度不一致，将 x_gal_mcmc 重采样到与 snu_mcmc 相同长度
+        if x_gal_mcmc.size != snu_mcmc.size:
+            idx = np.random.randint(0, x_gal_mcmc.size, size=snu_mcmc.size)
+            xg = x_gal_mcmc[idx]
+            xg_std = x_gal_std
+        else:
+            xg = x_gal_mcmc
+            xg_std = x_gal_std
+
+        # Galaxy + 端点/斜率
+        # gal_spectrum_mcmc = np.median(cnu_mcmc) + (xg + xg_std) * np.median(snu_mcmc)
+        gal_spectrum_mcmc = np.median(cnu_mcmc) + (xg + xg_std) * np.median(snu_mcmc)
         gal_spectrum.append(gal_spectrum_mcmc.mean())
         gal_spectrum_err.append(gal_spectrum_mcmc.std())
-        
-        # 计算 fnu_f 和 fnu_b
-        fnu_f_mcmc = snu_mcmc * (np.min(norm_lc[1]) - x_gal_mcmc)
-        fnu_b_mcmc = snu_mcmc * (np.max(norm_lc[1]) - x_gal_mcmc)
 
-        fnu_f.append(fnu_f_mcmc.mean())
-        fnu_f_err.append(fnu_f_mcmc.std())
-
-        fnu_b.append(fnu_b_mcmc.mean())
-        fnu_b_err.append(fnu_b_mcmc.std())
+        fnu_f_mcmc = snu_mcmc * (np.min(norm_lc[1]) - xg)
+        fnu_b_mcmc = snu_mcmc * (np.max(norm_lc[1]) - xg)
+        fnu_f.append(fnu_f_mcmc.mean());   fnu_f_err.append(fnu_f_mcmc.std())
+        fnu_b.append(fnu_b_mcmc.mean());   fnu_b_err.append(fnu_b_mcmc.std())
 
         slope.append(np.median(snu_mcmc))
         slope_err.append(np.std(snu_mcmc))
 
-        # 计算拟合直线
+        # 拟合直线
         lin_fit = np.median(snu_mcmc) * xx + np.median(cnu_mcmc)
-        
+
         # 光度单位转换
-        if wavelengths != None:
+        if wavelengths is not None:
+            wave_i = wavelengths[i] * u.Angstrom
             if (input_units != 'flam') and (output_units != 'flam'):
-                wave = wavelengths[i + kk] * u.Angstrom
                 dd = funits
-                if output_units != 'fnu':
-                    fac_flux[i + kk] = dd.cgs.to(output_units).value
-                else:
-                    fac_flux[i + kk] = dd.cgs.to('erg s^-1 cm^-2 Hz^-1').value
-
-            if (input_units != 'flam') and (output_units == 'flam'):
-                wave = wavelengths[i + kk] * u.Angstrom
-                dd = funits / (wave ** 2) * ct.c
-                fac_flux[i + kk] = dd.cgs.to('erg s^-1 cm^-2 Angstrom^-1').value / 1e-15
-
-            if (input_units == 'flam') and (output_units != 'flam'):
-                wave = wavelengths[i + kk] * u.Angstrom
-                dd = funits / ct.c * (wave ** 2)
-                if output_units != 'fnu':
-                    fac_flux[i + kk] = dd.cgs.to(output_units).value
-                else:
-                    fac_flux[i + kk] = dd.cgs.to('erg s^-1 cm^-2 Hz^-1').value
+                fac_flux[i] = dd.cgs.to(output_units).value if output_units != 'fnu' \
+                            else dd.cgs.to('erg s^-1 cm^-2 Hz^-1').value
+            elif (input_units != 'flam') and (output_units == 'flam'):
+                dd = funits / (wave_i**2) * ct.c
+                fac_flux[i] = dd.cgs.to('erg s^-1 cm^-2 Angstrom^-1').value / 1e-15
+            elif (input_units == 'flam') and (output_units != 'flam'):
+                dd = funits / ct.c * (wave_i**2)
+                fac_flux[i] = dd.cgs.to(output_units).value if output_units != 'fnu' \
+                            else dd.cgs.to('erg s^-1 cm^-2 Hz^-1').value
 
         # 绘制 Flux-Flux 图
-        plt.fill_between(xx, (mc_pl.mean(axis=0) + mc_pl.std(axis=0)) * fac_flux[i + kk],
-                        (mc_pl.mean(axis=0) - mc_pl.std(axis=0)) * fac_flux[i + kk],
-                        color=band_colors[i],
-                        alpha=0.3)
-        
-        interp_xt = np.interp(data[:, 0], norm_lc[0], norm_lc[1])
-        plt.errorbar(interp_xt, data[:, 1] * fac_flux[i + kk],
-                    yerr=np.sqrt(data[:, 2] ** 2 + sig ** 2) * fac_flux[i + kk],
-                    color=band_colors[i],
-                    ls='None', alpha=0.8)
-        plt.plot(xx, lin_fit * fac_flux[i + kk], color=band_colors[i], lw=3)
-        max_flux = np.max([max_flux, np.max(data[:, 1] * fac_flux[i + kk])])
+        plt.fill_between(xx,
+                        (mc_pl.mean(axis=0) + mc_pl.std(axis=0)) * fac_flux[i],
+                        (mc_pl.mean(axis=0) - mc_pl.std(axis=0)) * fac_flux[i],
+                        color=band_colors[i], alpha=0.3)
 
-    # 将计算结果转换为数组
+        interp_xt = np.interp(data[:, 0], norm_lc[0], norm_lc[1])
+        plt.errorbar(interp_xt, data[:, 1] * fac_flux[i],
+                    yerr=np.sqrt(data[:, 2]**2 + sig**2) * fac_flux[i],
+                    color=band_colors[i], ls='None', alpha=0.8)
+
+        plt.plot(xx, lin_fit * fac_flux[i], color=band_colors[i], lw=3)
+        max_flux = max(max_flux, np.max(data[:, 1] * fac_flux[i]))
+
+
     fnu_f = np.array(fnu_f)
     fnu_f_err = np.array(fnu_f_err)
     fnu_b = np.array(fnu_b)
@@ -983,7 +981,79 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
             if figname == None:
                 figname = 'pyroa_SED.pdf'
             plt.savefig(figname + '_SED.pdf')
+        # === Power-law fit: Y = (lambda_rest) * (F_bright - F_faint) vs X = lambda_rest ===
+        # 构造 X, Y 与误差
+        x_rest = wave / (1.0 + redshift)
+        F_bright_minus_faint = (np.array(unred(wave, fnu_b, ebv)) - np.array(unred(wave, fnu_f, ebv))) * fac_flux
+        F_bright_minus_faint_err = np.sqrt((np.array(fnu_b_err))**2 + (np.array(fnu_f_err))**2) * fac_flux
 
+        Y = x_rest * F_bright_minus_faint
+        Y_err = x_rest * F_bright_minus_faint_err  # 假设 x 无误差
+
+        # 只保留可用于对数拟合的点（正值、有限、非零误差）
+        m = np.isfinite(x_rest) & np.isfinite(Y) & np.isfinite(Y_err) & \
+            (x_rest > 0) & (Y > 0) & (Y_err > 0)
+
+        if np.count_nonzero(m) >= 3:
+            lx = np.log10(x_rest[m])
+            ly = np.log10(Y[m])
+
+            # 误差传播：sigma_log10(y) = (Y_err / (Y * ln(10)))
+            sigma_ly = (Y_err[m] / Y[m]) / np.log(10.0)
+            w = 1.0 / (sigma_ly**2)
+
+            # 使用curve_fit进行加权最小二乘法拟合
+            popt, pcov = opt.curve_fit(lambda x, A, beta: A * x**beta, x_rest[m], Y[m], sigma=Y_err[m], absolute_sigma=True)
+            
+            A_best, beta_best = popt
+            A_err, beta_err = np.sqrt(np.diag(pcov))
+
+            # 计算拟合的标准误差
+            res = ly - (np.log10(A_best) + beta_best * lx)
+            RSS = np.sum(w * res**2)
+            dof = max(np.count_nonzero(m) - 2, 1)
+            s2 = RSS / dof  # 加权残差方差的无偏估计
+            var_b = s2 / np.sum(w * (lx - np.sum(w * lx) / np.sum(w))**2)
+            var_a = s2 * (1.0 / np.sum(w) + np.sum(w * lx)**2 / np.sum(w * (lx - np.sum(w * lx) / np.sum(w))**2))
+            sb = np.sqrt(var_b)
+            sa = np.sqrt(var_a)
+
+            chi2_red = RSS / dof
+            expected = -4.0 / 3.0
+            zscore = (beta_best - expected) / (sb if sb > 0 else np.inf)
+
+            # 打印结果
+            print("=== Power-law fit of Y = λ_rest * (F_bright - F_faint) vs X = λ_rest ===")
+            print(f"N = {np.count_nonzero(m)} usable points")
+            print(f"Slope β (expected -4/3 ≈ -1.3333): {beta_best:.4f} ± {sb:.4f}")
+            print(f"Intercept a (log10 A): {np.log10(A_best):.4f} ± {sa:.4f}  ->  A = {A_best:.4e}")
+            print(f"Weighted χ²_red = {chi2_red:.3f}")
+            print(f"Deviation from -4/3: {(beta_best - expected):.4f}  ({zscore:.2f} σ)")
+
+            # 画图（errorbar 数据 + 拟合曲线），对数坐标
+            fig_fit = plt.figure(figsize=(8, 6))
+            ax_fit = fig_fit.add_subplot(111)
+            ax_fit.errorbar(x_rest[m], Y[m], yerr=Y_err[m], fmt='o', ms=6,
+                            alpha=0.85, label=r'$\lambda_{\rm rest}\,[F_{\rm bright}-F_{\rm faint}]$')
+            
+            xfit = np.logspace(np.log10(np.min(x_rest[m])), np.log10(np.max(x_rest[m])), 256)
+            yfit = A_best * xfit**beta_best
+            ax_fit.plot(xfit, yfit, '-', lw=2, label=fr'Fit: $Y = A\,X^{{\beta}}$,  $\beta={beta_best:.2f}$')
+
+            ax_fit.set_xscale('log')
+            ax_fit.set_yscale('log')
+            ax_fit.set_xlabel(r'Rest Wavelength / $\mathrm{\AA}$' if redshift > 0 else r'Observed Wavelength / $\mathrm{\AA}$')
+            ax_fit.set_ylabel(r'$\lambda_{\rm rest}\,[F_{\rm bright}-F_{\rm faint}]$')
+            ax_fit.legend()
+            ax_fit.xaxis.set_major_formatter(mtick.FormatStrFormatter('%.0f'))
+            ax_fit.yaxis.set_major_formatter(mtick.FormatStrFormatter('%.2e'))
+            plt.tight_layout()
+
+            if savefig:
+                figname = figname if figname else 'pyroa'
+                plt.savefig(figname + '_powerlaw_fit.pdf')
+        else:
+            print(" [PyROA] Not enough valid points for log-log fit; skipped power-law fitting.")
     else:
         print(' [PyROA] No wavelength list. Skipping SED plot.')
 
@@ -1013,38 +1083,38 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
 
 
 def Convergence(outputdir='./',samples_file='samples_flat.obj',burnin=0,
-				init_chain_length=100,savefig=True):
+                init_chain_length=100,savefig=True):
 
-	if outputdir[-1] != '/': outputdir += '/'
-	file = open(outputdir+samples_file,'rb')
-	samples = pickle.load(file)
-	
-	chain = samples[burnin:,:]
+    if outputdir[-1] != '/': outputdir += '/'
+    file = open(outputdir+samples_file,'rb')
+    samples = pickle.load(file)
+
+    chain = samples[burnin:,:]
 
 
-	# Compute the estimators for a few different chain lengths
-	N = np.exp(np.linspace(np.log(init_chain_length), np.log(chain.shape[0]), 10)).astype(int)
-	#print(N.min(),N.max())
-	#print(init_chain_length,chain.shape[0])
-	chain = samples.T
-	gw2010 = np.empty(len(N))
-	new = np.empty(len(N))
-	for i, n in enumerate(N):
-	    gw2010[i] = autocorr_gw2010(chain[:, :n])
-	    new[i] = autocorr_new(chain[:, :n])
+    # Compute the estimators for a few different chain lengths
+    N = np.exp(np.linspace(np.log(init_chain_length), np.log(chain.shape[0]), 10)).astype(int)
+    #print(N.min(),N.max())
+    #print(init_chain_length,chain.shape[0])
+    chain = samples.T
+    gw2010 = np.empty(len(N))
+    new = np.empty(len(N))
+    for i, n in enumerate(N):
+        gw2010[i] = autocorr_gw2010(chain[:, :n])
+        new[i] = autocorr_new(chain[:, :n])
 
-	fig = plt.figure(figsize=(8,6))
-	# Plot the comparisons
-	plt.loglog(N, gw2010, "o-", label="G&W 2010")
-	plt.loglog(N, new, "o-", label="new")
-	ylim = plt.gca().get_ylim()
-	plt.plot(N, N / 50., "--k", label=r"$\tau = N/50$")
-	plt.ylim(ylim)
-	plt.xlabel("number of samples, $N$")
-	plt.ylabel(r"$\tau$ estimates")
-	plt.legend(fontsize=14)
-	if savefig:
-		plt.savefig('pyroa_convergence.pdf')
+    fig = plt.figure(figsize=(8,6))
+    # Plot the comparisons
+    plt.loglog(N, gw2010, "o-", label="G&W 2010")
+    plt.loglog(N, new, "o-", label="new")
+    ylim = plt.gca().get_ylim()
+    plt.plot(N, N / 50., "--k", label=r"$\tau = N/50$")
+    plt.ylim(ylim)
+    plt.xlabel("number of samples, $N$")
+    plt.ylabel(r"$\tau$ estimates")
+    plt.legend(fontsize=14)
+    if savefig:
+        plt.savefig('pyroa_convergence.pdf')
 
 
 
