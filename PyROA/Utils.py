@@ -981,68 +981,92 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
             if figname == None:
                 figname = 'pyroa_SED.pdf'
             plt.savefig(figname + '_SED.pdf')
+
         # === Power-law fit: Y = (lambda_rest) * (F_bright - F_faint) vs X = lambda_rest ===
         # 构造 X, Y 与误差
         x_rest = wave / (1.0 + redshift)
-        F_bright_minus_faint = (np.array(unred(wave, fnu_b, ebv)) - np.array(unred(wave, fnu_f, ebv))) * fac_flux
-        F_bright_minus_faint_err = np.sqrt((np.array(fnu_b_err))**2 + (np.array(fnu_f_err))**2) * fac_flux
+        F_bright_minus_faint = (np.array(unred(wave, fnu_b, ebv)) -
+                                np.array(unred(wave, fnu_f, ebv))) * fac_flux
+        F_bright_minus_faint_err = np.sqrt((np.array(fnu_b_err))**2 +
+                                           (np.array(fnu_f_err))**2) * fac_flux
 
         Y = x_rest * F_bright_minus_faint
         Y_err = x_rest * F_bright_minus_faint_err  # 假设 x 无误差
 
-        # 只保留可用于对数拟合的点（正值、有限、非零误差）
+        # 只保留可用于拟合的点（正值、有限、非零误差）
         m = np.isfinite(x_rest) & np.isfinite(Y) & np.isfinite(Y_err) & \
             (x_rest > 0) & (Y > 0) & (Y_err > 0)
 
         if np.count_nonzero(m) >= 3:
-            lx = np.log10(x_rest[m])
-            ly = np.log10(Y[m])
+            # 幂律模型：Y = A * X^beta
+            def powerlaw(x, A, beta):
+                return A * x**beta
 
-            # 误差传播：sigma_log10(y) = (Y_err / (Y * ln(10)))
-            sigma_ly = (Y_err[m] / Y[m]) / np.log(10.0)
-            w = 1.0 / (sigma_ly**2)
+            # 使用 curve_fit 进行加权最小二乘拟合（线性空间）
+            popt, pcov = opt.curve_fit(
+                powerlaw,
+                x_rest[m], Y[m],
+                sigma=Y_err[m],
+                absolute_sigma=True
+            )
 
-            # 使用curve_fit进行加权最小二乘法拟合
-            popt, pcov = opt.curve_fit(lambda x, A, beta: A * x**beta, x_rest[m], Y[m], sigma=Y_err[m], absolute_sigma=True)
-            
             A_best, beta_best = popt
-            A_err, beta_err = np.sqrt(np.diag(pcov))
+            A_err, beta_err = np.sqrt(np.diag(pcov))  # 参数标准差，库直接给
 
-            # 计算拟合的标准误差
-            res = ly - (np.log10(A_best) + beta_best * lx)
-            RSS = np.sum(w * res**2)
+            # ---- log10(A) 及其误差：尽量交给库做误差传播 ----
+            try:
+                from uncertainties import ufloat, umath
+                A_u = ufloat(A_best, A_err)
+                a_u = umath.log10(A_u)   # 自动误差传播
+                a_best = a_u.n
+                sa = a_u.s
+            except ImportError:
+                # 若没有 uncertainties，则用一行解析公式作为 fallback
+                a_best = np.log10(A_best)
+                sa = A_err / (A_best * np.log(10.0))
+
+            sb = beta_err   # 斜率误差直接用 curve_fit 给的
+
+            # 计算 χ²_red（在线性空间，带权重）
+            res = (Y[m] - powerlaw(x_rest[m], A_best, beta_best)) / Y_err[m]
+            chi2 = np.sum(res**2)
             dof = max(np.count_nonzero(m) - 2, 1)
-            s2 = RSS / dof  # 加权残差方差的无偏估计
-            var_b = s2 / np.sum(w * (lx - np.sum(w * lx) / np.sum(w))**2)
-            var_a = s2 * (1.0 / np.sum(w) + np.sum(w * lx)**2 / np.sum(w * (lx - np.sum(w * lx) / np.sum(w))**2))
-            sb = np.sqrt(var_b)
-            sa = np.sqrt(var_a)
+            chi2_red = chi2 / dof
 
-            chi2_red = RSS / dof
             expected = -4.0 / 3.0
             zscore = (beta_best - expected) / (sb if sb > 0 else np.inf)
 
-            # 打印结果
+            # 打印结果（格式保持不变，只是内部计算方式简化了）
             print("=== Power-law fit of Y = λ_rest * (F_bright - F_faint) vs X = λ_rest ===")
             print(f"N = {np.count_nonzero(m)} usable points")
             print(f"Slope β (expected -4/3 ≈ -1.3333): {beta_best:.4f} ± {sb:.4f}")
-            print(f"Intercept a (log10 A): {np.log10(A_best):.4f} ± {sa:.4f}  ->  A = {A_best:.4e}")
+            print(f"Intercept a (log10 A): {a_best:.4f} ± {sa:.4f}  ->  A = {A_best:.4e}")
             print(f"Weighted χ²_red = {chi2_red:.3f}")
             print(f"Deviation from -4/3: {(beta_best - expected):.4f}  ({zscore:.2f} σ)")
 
             # 画图（errorbar 数据 + 拟合曲线），对数坐标
             fig_fit = plt.figure(figsize=(8, 6))
             ax_fit = fig_fit.add_subplot(111)
-            ax_fit.errorbar(x_rest[m], Y[m], yerr=Y_err[m], fmt='o', ms=6,
-                            alpha=0.85, label=r'$\lambda_{\rm rest}\,[F_{\rm bright}-F_{\rm faint}]$')
-            
-            xfit = np.logspace(np.log10(np.min(x_rest[m])), np.log10(np.max(x_rest[m])), 256)
-            yfit = A_best * xfit**beta_best
-            ax_fit.plot(xfit, yfit, '-', lw=2, label=fr'Fit: $Y = A\,X^{{\beta}}$,  $\beta={beta_best:.2f}$')
+            ax_fit.errorbar(
+                x_rest[m], Y[m], yerr=Y_err[m],
+                fmt='o', ms=6, alpha=0.85,
+                label=r'$\lambda_{\rm rest}\,[F_{\rm bright}-F_{\rm faint}]$'
+            )
+
+            xfit = np.logspace(np.log10(np.min(x_rest[m])),
+                               np.log10(np.max(x_rest[m])), 256)
+            yfit = powerlaw(xfit, A_best, beta_best)
+            ax_fit.plot(
+                xfit, yfit, '-', lw=2,
+                label=fr'Fit: $Y = A\,X^{{\beta}}$,  $\beta={beta_best:.2f}$'
+            )
 
             ax_fit.set_xscale('log')
             ax_fit.set_yscale('log')
-            ax_fit.set_xlabel(r'Rest Wavelength / $\mathrm{\AA}$' if redshift > 0 else r'Observed Wavelength / $\mathrm{\AA}$')
+            ax_fit.set_xlabel(
+                r'Rest Wavelength / $\mathrm{\AA}$'
+                if redshift > 0 else r'Observed Wavelength / $\mathrm{\AA}$'
+            )
             ax_fit.set_ylabel(r'$\lambda_{\rm rest}\,[F_{\rm bright}-F_{\rm faint}]$')
             ax_fit.legend()
             ax_fit.xaxis.set_major_formatter(mtick.FormatStrFormatter('%.0f'))
@@ -1054,6 +1078,7 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
                 plt.savefig(figname + '_powerlaw_fit.pdf')
         else:
             print(" [PyROA] Not enough valid points for log-log fit; skipped power-law fitting.")
+
     else:
         print(' [PyROA] No wavelength list. Skipping SED plot.')
 
