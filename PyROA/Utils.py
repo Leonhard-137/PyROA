@@ -12,6 +12,7 @@ import astropy.constants as ct
 from pandas import DataFrame
 import matplotlib.ticker as mtick
 import scipy.optimize as opt
+from uncertainties import ufloat
 
 def Chains(nparam,filters,delay_ref,
 				burnin=0, samples_file='samples_flat.obj',
@@ -765,7 +766,7 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
     if input_units == 'mJy': funits = 1*u.mJy
     if input_units == 'Jy': funits = 1*u.Jy
     if input_units == 'fnu': funits = 1*u.erg/u.s/(u.cm**2)/u.Hz
-    if input_units == 'flam': funits = 1*u.erg/u.s/(u.cm**2)/u.Angstrom
+    if input_units == 'flam': funits = 1e-15 * u.erg/u.s/(u.cm**2)/u.Angstrom
     if output_units == 'mJy': 
         ylab = r"F$_{\nu}$"+" / mJy"
     if output_units == 'Jy': 
@@ -892,7 +893,6 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
         plt.plot(xx, lin_fit * fac_flux[i], color=band_colors[i], lw=3)
         max_flux = max(max_flux, np.max(data[:, 1] * fac_flux[i]))
 
-
     fnu_f = np.array(fnu_f)
     fnu_f_err = np.array(fnu_f_err)
     fnu_b = np.array(fnu_b)
@@ -902,7 +902,6 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
     gal_spectrum = np.array(gal_spectrum)
     gal_spectrum_err = np.array(gal_spectrum_err)
 
-    # 绘制 SED 图
     plt.axvline(x=np.median(x_gal_mcmc + x_gal_mcmc.std()), color='r',
                 linestyle='-.', label=r'Galaxy')
     plt.axvline(x=np.min(norm_lc[1]), color='k',
@@ -1100,6 +1099,26 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
         'unred_agn_rms_err': np.array(unred(wave, slope_err, ebv)),
         'unred_gal': np.array(unred(wave, gal_spectrum, ebv)),
         'unred_gal_err': np.array(unred(wave, gal_spectrum_err, ebv))}
+    
+    # 假设 d['unred_agn_b'] 和 d['unred_agn_b_err'] 是数组或列表，逐一创建 ufloat 对象
+    unred_agn_b = [ufloat(b, e) for b, e in zip(d['unred_agn_b'], d['unred_agn_b_err'])]
+    unred_agn_F = [ufloat(f, e) for f, e in zip(d['unred_agn_f'], d['unred_agn_f_err'])]
+
+    # 计算 epsilon（亮度比）并处理误差传播
+    epsilon = [f / b for f, b in zip(unred_agn_F, unred_agn_b)]
+
+    # 提取 epsilon 的标准值和误差
+    epsilon_cern = [e.nominal_value for e in epsilon]
+    epsilon_err = [e.std_dev for e in epsilon]
+
+    # 将计算结果添加到字典
+    d['epsilon'] = epsilon_cern
+    d['epsilon_err'] = epsilon_err
+
+    unred_agn_b_Jy = [flam_to_jy(b.nominal_value, wave[i]) for i, b in enumerate(unred_agn_b)]
+    unred_agn_b_Jy_err = [flam_to_jy(b.std_dev, wave[i]) for i, b in enumerate(unred_agn_b)]
+    d['unred_agn_b_Jy'] = unred_agn_b_Jy
+    d['unred_agn_b_Jy_err'] = unred_agn_b_Jy_err
     df = DataFrame(data=d)
     if figname == None:
         figname = 'pyroa'
@@ -1347,3 +1366,10 @@ def unred(wave, flux, ebv, R_V=3.1, LMC2=False, AVGLMC=False):
     curve *= ebv
 
     return flux * 10.**(0.4*curve)
+
+def flam_to_jy(flux, wavelength):
+    c = 3e18  # 光速，单位为 Å/s
+    jy_conversion_factor = 1e8
+    jy_flux = flux * (wavelength ** 2) / c * jy_conversion_factor
+    
+    return jy_flux
