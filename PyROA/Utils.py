@@ -13,12 +13,14 @@ from pandas import DataFrame
 import matplotlib.ticker as mtick
 import scipy.optimize as opt
 from uncertainties import ufloat
+from pathlib import Path
 
-def Chains(nparam,filters,delay_ref,
-				burnin=0, samples_file='samples_flat.obj',
-                outputdir = './', initial=0,
-                savefig=True,figname=None):
-	"""Parameter Chain Plot of MCMC from PyROA outputs
+def Chains(nparam, objname, filters, delay_ref,
+           burnin=0, samples_file='samples_flat.obj',
+           outputdir='./', initial=0,
+           savefig=True, figname=None):
+    
+    """Parameter Chain Plot of MCMC from PyROA outputs
 	nparam : str
 		Parameters to show in the corner plot. Can choose
 		individual ones such as: 'A','B','tau','sig'
@@ -69,104 +71,104 @@ def Chains(nparam,filters,delay_ref,
 
 	"""
 
-	if outputdir[-1] != '/': outputdir += '/'
+    # 使用 Path 处理目录，并确保存在
+    outputdir = Path(outputdir)
+    outputdir.mkdir(parents=True, exist_ok=True)
+    objname = objname
 
-	file = open(outputdir+samples_file,'rb')
-	samples = pickle.load(file)
-	
-	samples = samples[burnin:,:]
+    # 读取样本
+    samples_path = outputdir / samples_file
+    with open(samples_path, 'rb') as f:
+        samples = pickle.load(f)
 
-	ss = np.where(np.array(filters) == delay_ref)[0][0]
-	#print(ss)
-	labels = []
-	for i in range(len(filters)):
-		for j in ["A", "B",r"$\tau$", r"$\sigma$"]:
-			labels.append(j+r'$_{'+filters[i]+r'}$')
-	labels.append(r'$\Delta$')
-	all_labels = labels.copy()
-	del labels[ss*4+2]
-	#print(labels)
+    samples = samples[burnin:, :]
 
-	if type(nparam ) is int:
-		ndim = nparam
-		fig, axes = plt.subplots(ndim, figsize=(10, 2*ndim), sharex=True)
-		#samples = sampler.get_chain()
-		#labels = ["A", "B",r"$\tau$", r"$\sigma$"]
-		ct = 0
-		for i in range(initial,initial+ndim):
-		    ax = axes[ct]
-		    ax.plot(samples[:, i], "k", alpha=0.3)
-		    ax.set_xlim(0, len(samples))
-		    #ax.set_ylabel("Param "+str(initial+i))
-		    #print(i,labels[i])
-		    ax.set_ylabel(labels[i])
-		    ax.yaxis.set_label_coords(-0.1, 0.5)
-		    ct += 1
-		axes[-1].set_xlabel("Chain number")
-	elif (nparam == 'all'):
-		ndim = samples.shape[1]
-		fig, axes = plt.subplots(ndim, figsize=(10, 2*ndim), sharex=True)
-		#samples = sampler.get_chain()
-		#labels = ["A", "B",r"$\tau$", r"$\sigma$"]
-		ct = 0
-		for i in range(ndim):
-		    ax = axes[ct]
-		    ax.plot(samples[:, i], "k", alpha=0.3)
-		    ax.set_xlim(0, len(samples))
-		    #ax.set_ylabel("Param "+str(initial+i))
-		    #print(i,labels[i])
-		    ax.set_ylabel(labels[i])
-		    ax.yaxis.set_label_coords(-0.1, 0.5)
-		    ct += 1
-		axes[-1].set_xlabel("Chain number")
-	elif (nparam == 'tau') or (nparam == 'A') or (nparam == 'B') or (nparam == 'sig'):
-		if nparam == 'A': shifter = 0
-		if nparam == 'B': shifter = 1
-		if nparam == 'tau': shifter = 2
-		if nparam == 'sig': shifter = 3
-		ndim = len(filters)
-		fig, axes = plt.subplots(ndim-1, figsize=(10, 2*ndim), sharex=True)
-		#samples = sampler.get_chain()
-		#labels = ["A", "B",r"$\tau$", r"$\sigma$"]
-		ct = 0
-		mm = 0
-		for i in range(ndim):
-			if i != ss:
-			    ax = axes[ct]
-			    ax.plot(samples[:, i*4+shifter+mm], "k", alpha=0.3)
-			    ax.set_xlim(0, len(samples))
-			    #ax.set_ylabel("Param "+str(initial+i))
-			    #print(i,all_labels[i*4+shifter])
-			    ax.set_ylabel(all_labels[i*4+shifter],fontsize=20)
-			    ax.yaxis.set_label_coords(-0.1, 0.5)
-			    ct+=1
-			if i == ss:
-				mm = -1
-		axes[-1].set_xlabel("Chain number")
-	elif (nparam == 'delta'):
-		fig, ax = plt.subplots(1, figsize=(10, 2))
-		#samples = sampler.get_chain()
-		#labels = ["A", "B",r"$\tau$", r"$\sigma$"]
+    ss = np.where(np.array(filters) == delay_ref)[0][0]
 
-		
-		ax.plot(samples[:, -1], "k", alpha=0.3)
-		ax.set_xlim(0, len(samples))
-		#ax.set_ylabel("Param "+str(initial+i))
-		#print(i,all_labels[-1])
-		ax.set_ylabel(all_labels[-1],fontsize=20)
-		ax.yaxis.set_label_coords(-0.1, 0.5)
-			
-		ax.set_xlabel("Chain number")
-	if savefig:		
-		if figname == None: figname = 'pyroa_corner.pdf'
-		plt.savefig(figname)
+    labels = []
+    for i in range(len(filters)):
+        for j in ["A", "B", r"$\tau$", r"$\sigma$"]:
+            labels.append(j + r'$_{' + filters[i] + r'}$')
+    labels.append(r'$\Delta$')
+    all_labels = labels.copy()
+    del labels[ss * 4 + 2]
 
-def CornerPlot(nparam,filters,delay_ref,
-				burnin=0,
-				samples_file='samples_flat.obj',
-				outputdir = './',
-				savefig=True,figname=None):
-	"""Corner Plot of MCMC parameters from PyROA outpu
+    # -------- 几种不同的 nparam 模式 --------
+    if isinstance(nparam, int):
+        ndim = nparam
+        fig, axes = plt.subplots(ndim, figsize=(10, 2 * ndim), sharex=True)
+        ct = 0
+        for i in range(initial, initial + ndim):
+            ax = axes[ct]
+            ax.plot(samples[:, i], "k", alpha=0.3)
+            ax.set_xlim(0, len(samples))
+            ax.set_ylabel(labels[i])
+            ax.yaxis.set_label_coords(-0.1, 0.5)
+            ct += 1
+        axes[-1].set_xlabel("Chain number")
+
+    elif nparam == 'all':
+        ndim = samples.shape[1]
+        fig, axes = plt.subplots(ndim, figsize=(10, 2 * ndim), sharex=True)
+        ct = 0
+        for i in range(ndim):
+            ax = axes[ct]
+            ax.plot(samples[:, i], "k", alpha=0.3)
+            ax.set_xlim(0, len(samples))
+            ax.set_ylabel(labels[i])
+            ax.yaxis.set_label_coords(-0.1, 0.5)
+            ct += 1
+        axes[-1].set_xlabel("Chain number")
+
+    elif nparam in ('tau', 'A', 'B', 'sig'):
+        if nparam == 'A':
+            shifter = 0
+        elif nparam == 'B':
+            shifter = 1
+        elif nparam == 'tau':
+            shifter = 2
+        else:  # 'sig'
+            shifter = 3
+
+        ndim = len(filters)
+        fig, axes = plt.subplots(ndim - 1, figsize=(10, 2 * ndim), sharex=True)
+        ct = 0
+        mm = 0
+        for i in range(ndim):
+            if i != ss:
+                ax = axes[ct]
+                ax.plot(samples[:, i * 4 + shifter + mm], "k", alpha=0.3)
+                ax.set_xlim(0, len(samples))
+                ax.set_ylabel(all_labels[i * 4 + shifter], fontsize=20)
+                ax.yaxis.set_label_coords(-0.1, 0.5)
+                ct += 1
+            else:
+                mm = -1
+        axes[-1].set_xlabel("Chain number")
+
+    elif nparam == 'delta':
+        fig, ax = plt.subplots(1, figsize=(10, 2))
+        ax.plot(samples[:, -1], "k", alpha=0.3)
+        ax.set_xlim(0, len(samples))
+        ax.set_ylabel(all_labels[-1], fontsize=20)
+        ax.yaxis.set_label_coords(-0.1, 0.5)
+        ax.set_xlabel("Chain number")
+
+    # -------- 保存图片 --------
+    if savefig:
+        outname = f'{objname}_pyroa_chains.pdf'
+        outpath = outputdir / outname
+        plt.savefig(outpath)
+
+
+def CornerPlot(nparam, objname, filters, delay_ref,
+               burnin=0,
+               samples_file='samples_flat.obj',
+               outputdir='./',
+               savefig=True, figname=None):
+
+    """
+    Corner Plot of MCMC parameters from PyROA outpu
 	nparam : str
 		Parameters to show in the corner plot. Can choose
 		individual ones such as: 'A','B','tau','sig'
@@ -211,165 +213,145 @@ def CornerPlot(nparam,filters,delay_ref,
 	delay_ref = 'g'
 	pyroa_utils.corner_plot('tau',filters,delay_ref,
 	                  burnin=burnin)
-
 	"""
-	if outputdir[-1] != '/': outputdir += '/'
-	file = open(outputdir+samples_file,'rb')
-	samples = pickle.load(file)[burnin:]
 
-	ss = np.where(np.array(filters) == delay_ref)[0][0]
-	#print(ss)
-	labels = []
-	for i in range(len(filters)):
-		for j in ["A", "B",r"$\tau$", r"$\sigma$"]:
-			labels.append(j+r'$_{'+filters[i]+r'}$')
-	labels.append(r'$\Delta$')
-	all_labels = labels.copy()
-	del labels[ss*4+2]
+    # 用 Path 处理目录，并保证存在
+    outputdir = Path(outputdir)
+    outputdir.mkdir(parents=True, exist_ok=True)
 
-	#print(labels)
-	if (nparam == 'tau') or (nparam == 'A') or (nparam == 'B') or (nparam == 'sig'):
-		if nparam == 'A': shifter = 0
-		if nparam == 'B': shifter = 1
-		if nparam == 'tau': shifter = 2
-		if nparam == 'sig': shifter = 3
+    # 读取 samples
+    samples_path = outputdir / samples_file
+    with open(samples_path, 'rb') as f:
+        samples = pickle.load(f)[burnin:]
 
-		list_only = []
-		mm = 0
-		for i in range(len(filters)):
-			if i != ss:
-				list_only.append(i*4+shifter+mm)
-			if i == ss:
-				mm = -1
-		#print(list_only)
-		#print(np.array(labels)[list_only])
-		gg = corner.corner(samples[:,list_only],show_titles=True,
-							labels=np.array(labels)[list_only],
-							title_kwargs={'fontsize':19})
-	if nparam == 'all':
-		gg = corner.corner(samples,show_titles=True,labels=labels)
-	if savefig:
-		if figname == None: figname = 'pyroa_corner.pdf'
-		plt.savefig(figname)
+    ss = np.where(np.array(filters) == delay_ref)[0][0]
 
-def LagSpectrum(filters,delay_ref,wavelengths,
-				burnin=0,samples_file='samples_flat.obj',
-				outputdir = './',
-				band_colors = None,
-				redshift=0.0,
-				savefig=True,figname=None):
-	"""Lag spectrum from the best fit lags as measured by PyROA
-    
-    Parameters
-    ----------
-    filters : list
-        List of filters used in the PyROA fit.
-    delay_ref : str
-        Name of the filter used as the reference. Must be contained in
-        "filters".
-    wavelengths : list
-        List of wavelengths corresponding to each filter. Assumed to be in 
-        Angstroms. If not provided, the SED will **not** be constructed.
-        Default: None
+    labels = []
+    for i in range(len(filters)):
+        for j in ["A", "B", r"$\tau$", r"$\sigma$"]:
+            labels.append(j + r'$_{' + filters[i] + r'}$')
+    labels.append(r'$\Delta$')
+    all_labels = labels.copy()
+    del labels[ss * 4 + 2]
 
-	burnin : float, optional
-        Number of samples to discard in the fit, from 0 to burnin.
-        This cut is applied to the samples_flat.obj.
-        Use the "convergence" or "chains" plots to determine this 
-        number.  Default: 0
-    samples_file : str, optional
-        File name of the MCMC samples. Default: "samples_flat.obj"
-        This is the PyROA standard output.
-    outputdir : str, optional
-        Directory path where PyROA "*.obj" are stored. 
-        This is the PyROA standard output. Default: Current directory "./"
-    band_colors : list, optional
-        List of colours for each filter. List must be the same size as
-        the filters array. Default: all lightcurves will be black.
-    redshift : float, optional
-        Redshift of the AGN. Default: 0.0
-    savefig : bool, optional
-        Save figure as a PDF Default: True.
-    figname : str, optional
-        Name of the figure to be saved. If not provided, the default
-        name is 'pyroa_lagspectrum.pdf'
+    # 只画某一类参数：A / B / tau / sig
+    if nparam in ('tau', 'A', 'B', 'sig'):
+        if nparam == 'A':
+            shifter = 0
+        elif nparam == 'B':
+            shifter = 1
+        elif nparam == 'tau':
+            shifter = 2
+        else:  # 'sig'
+            shifter = 3
 
-    Returns
-    -------
-    None
+        list_only = []
+        mm = 0
+        for i in range(len(filters)):
+            if i != ss:
+                list_only.append(i * 4 + shifter + mm)
+            else:
+                mm = -1
 
-    Example
-    -------
-	import pyroa_utils
-	
-	waves = [3580,4392,4770]
-	objName="NGC_4151"
-	burnin = 250000
-	filters=['u','B','g']
-	band_colors=['#0652DD','#1289A7','#006266']
+        gg = corner.corner(
+            samples[:, list_only],
+            show_titles=True,
+            labels=np.array(labels)[list_only],
+            title_kwargs={'fontsize': 19}
+        )
 
-	pyroa_utils.lag_spectrum(filters,delay_ref,
-	                burnin=burnin,
-	                band_colors=band_colors,
-	                wavelengths=waves,redshift=0.003326)
-	"""
-	if outputdir[-1] != '/': outputdir += '/'
-	file = open(outputdir+samples_file,'rb')
-	samples = pickle.load(file)[burnin:]
+    # 画所有参数
+    elif nparam == 'all':
+        gg = corner.corner(
+            samples,
+            show_titles=True,
+            labels=all_labels,
+            title_kwargs={'fontsize': 19}
+        )
 
-	ss = np.where(np.array(filters) == delay_ref)[0][0]
-	#print(ss)
-	labels = []
-	for i in range(len(filters)):
-		for j in ["A", "B",r"$\tau$", r"$\sigma$"]:
-			labels.append(j+r'$_{'+filters[i]+r'}$')
-	labels.append(r'$\Delta$')
-	all_labels = labels.copy()
-	del labels[ss*4+2]
+    # 保存图像
+    if savefig:
+        outname = f'{objname}_pyroa_corner.pdf'
+        outpath = outputdir / outname
+        plt.savefig(outpath)
 
-	# To get ONLY lags
-	shifter = 2
+def LagSpectrum(filters, objname, delay_ref, wavelengths,
+                burnin=0, samples_file='samples_flat.obj',
+                outputdir='./',
+                band_colors=None,
+                redshift=0.0,
+                savefig=True, figname=None):
 
-	list_only = []
-	mm = 0
-	ndim = len(filters)
-	for i in range(ndim):
-		if i != ss:
-			list_only.append(i*4+shifter+mm)
-		if i == ss:
-			mm = -1
-	# Get the 
-	lag,lag_m,lag_p = np.zeros(ndim-1),np.zeros(ndim-1),np.zeros(ndim-1)
-	for j,i in enumerate(list_only):
-		#print(i)
-		q50 = np.percentile(samples[:,i],50)
-		q84 = np.percentile(samples[:,i],84)
-		q16 = np.percentile(samples[:,i],16)
-		lag[j] = q50
-		lag_m[j] = q50-q16
-		lag_p[j] = q84-q50
-	fig = plt.figure(figsize=(10,7))
-	ax = fig.add_subplot(111)
+    # 统一用 Path，并确保目录存在
+    outputdir = Path(outputdir)
+    outputdir.mkdir(parents=True, exist_ok=True)
+    objname = objname
+    # 读样本
+    samples_path = outputdir / samples_file
+    with open(samples_path, 'rb') as f:
+        samples = pickle.load(f)[burnin:]
 
-	plt.axhline(y=0,ls='--',alpha=0.5,)
+    ss = np.where(np.array(filters) == delay_ref)[0][0]
 
-	if band_colors == None: band_colors = 'k'*7
+    labels = []
+    for i in range(len(filters)):
+        for j in ["A", "B", r"$\tau$", r"$\sigma$"]:
+            labels.append(j + r'$_{' + filters[i] + r'}$')
+    labels.append(r'$\Delta$')
+    all_labels = labels.copy()
+    del labels[ss * 4 + 2]
 
-	mm = 0
-	for i in range(lag.size):		
-		plt.errorbar(wavelengths[i]/(1+redshift),lag[i]/(1+redshift),
-					yerr=lag_m[i],marker='o',
-					color=band_colors[i])
+    # 只要 tau
+    shifter = 2
+    list_only = []
+    mm = 0
+    ndim = len(filters)
+    for i in range(ndim):
+        if i != ss:
+            list_only.append(i * 4 + shifter + mm)
+        if i == ss:
+            mm = -1
 
-	if redshift > 0:
-		plt.xlabel(r'Rest Wavelength / $\mathrm{\AA}$')
-		plt.ylabel(r'$\tau_{\rm rest}$ / day')
-	else:
-		plt.xlabel(r'Observed Wavelength / $\mathrm{\AA}$')
-		plt.ylabel(r'$\tau$ / day')
-	if savefig:
-		if figname == None: figname = 'pyroa_lagspectrum.pdf'
-		plt.savefig(figname)
+    # 计算各波段 lag 及误差
+    lag = np.zeros(ndim - 1)
+    lag_m = np.zeros(ndim - 1)
+    lag_p = np.zeros(ndim - 1)
+    for j, i in enumerate(list_only):
+        q50 = np.percentile(samples[:, i], 50)
+        q84 = np.percentile(samples[:, i], 84)
+        q16 = np.percentile(samples[:, i], 16)
+        lag[j] = q50
+        lag_m[j] = q50 - q16
+        lag_p[j] = q84 - q50
+
+    fig = plt.figure(figsize=(10, 7))
+    ax = fig.add_subplot(111)
+
+    plt.axhline(y=0, ls='--', alpha=0.5)
+
+    # 颜色：默认给每个点一个 'k'
+    if band_colors is None:
+        band_colors = ['k'] * lag.size
+
+    for i in range(lag.size):
+        plt.errorbar(
+            wavelengths[i] / (1 + redshift),
+            lag[i] / (1 + redshift),
+            yerr=lag_m[i],
+            marker='o',
+            color=band_colors[i]
+        )
+
+    if redshift > 0:
+        plt.xlabel(r'Rest Wavelength / $\mathrm{\AA}$')
+        plt.ylabel(r'$\tau_{\rm rest}$ / day')
+    else:
+        plt.xlabel(r'Observed Wavelength / $\mathrm{\AA}$')
+        plt.ylabel(r'$\tau$ / day')
+
+    if savefig:
+        outpath = outputdir / f'{objname}_pyroa_lagspectrum.pdf'
+        plt.savefig(outpath)
 
 def Lightcurves(objName, filters, delay_ref,
                 lc_file="Lightcurve_models.obj",
@@ -392,10 +374,9 @@ def Lightcurves(objName, filters, delay_ref,
         "font.size": 19
     })
 
-    if outputdir[-1] != '/':
-        outputdir += '/'
-    if datadir[-1] != '/':
-        datadir += '/'
+    outputdir = Path(outputdir)
+    datadir = Path(datadir)
+    outputdir.mkdir(parents=True, exist_ok=True)
 
     if ylab is None:
         ylab = r"F$_{\nu}$" + "\nmJy"
@@ -405,15 +386,15 @@ def Lightcurves(objName, filters, delay_ref,
     ss = np.where(np.array(filters) == delay_ref)[0][0]
 
     # 读 MCMC 样本 & 模型
-    with open(outputdir + samples_file, 'rb') as f:
+    with open(outputdir / samples_file, 'rb') as f:
         samples_flat = pickle.load(f)
     samples_flat = samples_flat[burnin:, :]
 
-    with open(outputdir + lc_file, 'rb') as f:
+    with open(outputdir / lc_file, 'rb') as f:
         models = pickle.load(f)
 
     if include_slow_comp:
-        with open(outputdir + slow_comp_file, 'rb') as f:
+        with open(outputdir / slow_comp_file, 'rb') as f:
             slow_comps = pickle.load(f)
 
     # 按 A, B, tau, sig 切 chunk
@@ -454,8 +435,8 @@ def Lightcurves(objName, filters, delay_ref,
     # ======================== 主循环：逐滤光片处理 ========================
     for i in range(len(filters)):
         # 读数据
-        file = datadir + objName + "_" + str(filters[i]) + ".dat"
-        this_data = np.loadtxt(file)
+        data_file = datadir / f"{objName}_{filters[i]}.dat"
+        this_data = np.loadtxt(data_file)
         data.append(this_data)
 
         mjd = this_data[:, 0]
@@ -639,9 +620,8 @@ def Lightcurves(objName, filters, delay_ref,
         ax.label_outer()
 
     if savefig:
-        if figname is None:
-            figname = 'pyroa_lightcurves.pdf'
-        plt.savefig(figname)
+        outpath = outputdir/f"{objName}_pyroa_lightcurves.pdf"
+        plt.savefig(outpath)
 
 
 def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
@@ -759,8 +739,10 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
     "font.size": 19})  
 	
     # To Do: 改成Path
-    if outputdir[-1] != '/': outputdir += '/'
-    if ylab ==None: ylab = r"F$_{\nu}$"+" / mJy"
+    outputdir = Path(outputdir)
+    datadir = Path(datadir)
+    outputdir.mkdir(parents=True, exist_ok=True)
+
     #if filter_labels == None: filter_labels = filters
 
     if input_units == 'mJy': funits = 1*u.mJy
@@ -777,14 +759,17 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
         ylab = r"F$_{\lambda}$"+r" / $\times10^{-15}$ erg s$^{-1}$ cm$^{-2}$ ${\rm \AA}^{-1}$"
 
     ss = np.where(np.array(filters) == delay_ref)[0][0]
-    file = open(outputdir+samples_file,'rb')
-    samples_flat = pickle.load(file)
+
+    with open(outputdir/samples_file, 'rb') as f:
+        samples_flat = pickle.load(f)
     samples_flat = samples_flat[burnin:,:]
-    file = open(outputdir+lc_file,'rb')
-    models = pickle.load(file)
+
+    with open(outputdir/lc_file, 'rb') as f:
+         models = pickle.load(f)
     
-    file = open(outputdir+xt_file,'rb')
-    norm_lc = pickle.load(file)
+    with open(outputdir/xt_file, 'rb') as f:
+        norm_lc = pickle.load(f)
+
     wave = np.array(wavelengths)
 
     #Split samples into chunks, 4 per lightcurve i.e A, B, tau, sig
@@ -826,8 +811,8 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
 
     for i, flt in enumerate(filters):
         # 读取每个滤光片对应的 .dat 文件
-        file = datadir + objName + "_" + str(flt) + ".dat"
-        data = np.loadtxt(file)
+        data_file =datadir/f"{objName}_{flt}.dat"
+        data = np.loadtxt(data_file)
         snu_mcmc = samples_chunks[i][0]
         cnu_mcmc = samples_chunks[i][1]
         sig = np.percentile(samples_chunks[i][3], 50)
@@ -921,9 +906,7 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
     plt.tight_layout()
 
     if savefig:
-        if figname == None:
-            figname = 'pyroa'
-        plt.savefig(figname + '_fluxflux.pdf')
+        plt.savefig(outputdir/f'{objName}_fluxflux.pdf')
 
     # 绘制 SED 图
     if wavelengths != None:
@@ -977,9 +960,7 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
         plt.tight_layout()
 
         if savefig:
-            if figname == None:
-                figname = 'pyroa_SED.pdf'
-            plt.savefig(figname + '_SED.pdf')
+            plt.savefig(outputdir/f'{objName}_SED.pdf')
 
         # === Power-law fit: Y = (lambda_rest) * (F_bright - F_faint) vs X = lambda_rest ===
         # 构造 X, Y 与误差
@@ -1073,8 +1054,7 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
             plt.tight_layout()
 
             if savefig:
-                figname = figname if figname else 'pyroa'
-                plt.savefig(figname + '_powerlaw_fit.pdf')
+                plt.savefig(outputdir/f'{objName}_powerlaw_fit.pdf')
         else:
             print(" [PyROA] Not enough valid points for log-log fit; skipped power-law fitting.")
 
@@ -1120,35 +1100,45 @@ def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
     d['unred_agn_b_Jy'] = unred_agn_b_Jy
     d['unred_agn_b_Jy_err'] = unred_agn_b_Jy_err
     df = DataFrame(data=d)
-    if figname == None:
-        figname = 'pyroa'
-    df.to_csv(figname + '_fluxflux.csv', index=False)
+    
+    df.to_csv(outputdir/f'{objName}_fluxflux.csv', index=False)
 
 
+def Convergence(objname,
+                outputdir='./',
+                samples_file='samples_flat.obj',
+                burnin=0,
+                init_chain_length=100,
+                savefig=True):
 
-def Convergence(outputdir='./',samples_file='samples_flat.obj',burnin=0,
-                init_chain_length=100,savefig=True):
+    # 用 Path 处理目录并确保存在
+    outputdir = Path(outputdir)
+    outputdir.mkdir(parents=True, exist_ok=True)
+    
+    # 读 samples
+    samples_path = outputdir / samples_file
+    with open(samples_path, 'rb') as f:
+        samples = pickle.load(f)
 
-    if outputdir[-1] != '/': outputdir += '/'
-    file = open(outputdir+samples_file,'rb')
-    samples = pickle.load(file)
+    # 去掉 burnin
+    chain = samples[burnin:, :]          # 形状 (Nsamples, Ndim)
 
-    chain = samples[burnin:,:]
+    # 计算不同长度的链对应的自相关估计
+    N = np.exp(
+        np.linspace(np.log(init_chain_length),
+                    np.log(chain.shape[0]), 10)
+    ).astype(int)
 
+    # 转置后再传给自相关函数（假设期望形状是 (Ndim, Nsamples)）
+    chain_T = chain.T                    # 形状 (Ndim, Nsamples)
 
-    # Compute the estimators for a few different chain lengths
-    N = np.exp(np.linspace(np.log(init_chain_length), np.log(chain.shape[0]), 10)).astype(int)
-    #print(N.min(),N.max())
-    #print(init_chain_length,chain.shape[0])
-    chain = samples.T
     gw2010 = np.empty(len(N))
     new = np.empty(len(N))
     for i, n in enumerate(N):
-        gw2010[i] = autocorr_gw2010(chain[:, :n])
-        new[i] = autocorr_new(chain[:, :n])
+        gw2010[i] = autocorr_gw2010(chain_T[:, :n])
+        new[i] = autocorr_new(chain_T[:, :n])
 
-    fig = plt.figure(figsize=(8,6))
-    # Plot the comparisons
+    fig = plt.figure(figsize=(8, 6))
     plt.loglog(N, gw2010, "o-", label="G&W 2010")
     plt.loglog(N, new, "o-", label="new")
     ylim = plt.gca().get_ylim()
@@ -1157,9 +1147,10 @@ def Convergence(outputdir='./',samples_file='samples_flat.obj',burnin=0,
     plt.xlabel("number of samples, $N$")
     plt.ylabel(r"$\tau$ estimates")
     plt.legend(fontsize=14)
-    if savefig:
-        plt.savefig('pyroa_convergence.pdf')
 
+    if savefig:
+        outpath = outputdir / f'{objname}_pyroa_convergence.pdf'
+        plt.savefig(outpath)
 
 
 # Automated windowing procedure following Sokal (1989)

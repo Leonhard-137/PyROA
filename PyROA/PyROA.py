@@ -25,6 +25,7 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.integrate import quad
 import csv
 from pandas import DataFrame
+from pathlib import Path
 
 #Response Functions
 ##########################################
@@ -1135,7 +1136,7 @@ def Slow(t, S0, dS, t0):
     return S0 + dS*(((t -t0)**2.0))
      
 
-def FullFit(data, priors, init_tau, init_delta, add_var, sig_level, Nsamples, 
+def FullFit(data, outputdir, objName, priors, init_tau, init_delta, add_var, sig_level, Nsamples, 
             Nburnin, include_slow_comp, slow_comp_delta, calc_P, delay_dist,
             psi_types, pos_ref, AccDisc, wavelengths, filters, use_backend, 
             resume_progress, plot_corner,memfunction, gridsize):
@@ -1388,12 +1389,13 @@ def FullFit(data, priors, init_tau, init_delta, add_var, sig_level, Nsamples,
     pos = np.array(pos)
 
     #print(np.array(pos))
-    np.savetxt('test_initial_points.txt',pos.T)
+    outputdir = Path(outputdir)  # 在 FullFit 开头统一 Path 一下
+    np.savetxt(outputdir / f'{objName}_test_initial_points.txt', pos.T)
     nwalkers, ndim = pos.shape
     #Backend
     if (use_backend == True):
-        filename = "Fit.h5"
-        backend = emcee.backends.HDFBackend(filename)
+        filename = outputdir/"Fit.h5"
+        backend = emcee.backends.HDFBackend(str(filename))
         if (resume_progress == True):
             print("Backend size: {0}".format(backend.iteration))
             pos = None
@@ -1405,7 +1407,7 @@ def FullFit(data, priors, init_tau, init_delta, add_var, sig_level, Nsamples,
         sampler = emcee.EnsembleSampler(nwalkers, ndim, log_probability, args=[data, priors, add_var, size,sig_level, include_slow_comp, 
                                         slow_comp_delta, P_func, slow_comps, P_slow, init_delta, delay_dist, psi_types, 
                                         pos_ref, AccDisc, wavelengths, integral, integral2, init_params_chunks,memfunction, gridsize], pool=pool, backend=backend)
-        sampler.run_mcmc(pos, Nsamples, progress=True);
+        sampler.run_mcmc(pos, Nsamples, progress=True)
 
     #Extract samples with burn-in of 1000
     samples_flat = sampler.get_chain(discard=Nburnin, thin=15, flat=True)
@@ -1703,20 +1705,22 @@ def FullFit(data, priors, init_tau, init_delta, add_var, sig_level, Nsamples,
     table = [params]
     print(tabulate(table, headers=labels))
     
-    #Write samples to file
-    filehandler = open(b"samples_flat.obj","wb")
-    pickle.dump(samples_flat,filehandler)
-    filehandler = open(b"samples.obj","wb")
-    pickle.dump(samples,filehandler)
+    with open(outputdir / f"{objName}_samples_flat.obj", "wb") as f:
+        pickle.dump(samples_flat, f)
 
-    filehandler = open(b"X_t.obj","wb")
-    pickle.dump([t, m, errs],filehandler)
-    if (include_slow_comp==True):      
-        filehandler = open(b"Slow_Comps.obj","wb")
-        pickle.dump(slow_comps_out,filehandler)
-        
-    filehandler = open(b"Lightcurve_models.obj","wb")
-    pickle.dump(models,filehandler)
+    with open(outputdir / f"{objName}_samples.obj", "wb") as f:
+        pickle.dump(samples, f)
+
+    with open(outputdir / f"{objName}_X_t.obj", "wb") as f:
+        pickle.dump([t, m, errs], f)
+
+    if include_slow_comp:
+        with open(outputdir / f"{objName}_Slow_Comps.obj", "wb") as f:
+            pickle.dump(slow_comps_out, f)
+
+    with open(outputdir / f"{objName}_Lightcurve_models.obj", "wb") as f:
+        pickle.dump(models, f)
+
     
         
     
@@ -1724,12 +1728,12 @@ def FullFit(data, priors, init_tau, init_delta, add_var, sig_level, Nsamples,
         #Plot Corner Plot
         plt.rcParams.update({'font.size': 15})
         #Save Cornerplot to figure
-        fig = corner.corner(samples_flat, labels=labels, quantiles=[0.16, 0.5, 0.84], show_titles=True, title_kwargs={"fontsize": 20});
+        fig = corner.corner(samples_flat, labels=labels, quantiles=[0.16, 0.5, 0.84], show_titles=True, title_kwargs={"fontsize": 20})
         i = 1
-        while os.path.exists('{}{:d}.pdf'.format("CornerPlot", i)):
+        while (outputdir / f"CornerPlot{i}.pdf").exists():
             i += 1
-        fig.savefig('{}{:d}.pdf'.format("CornerPlot", i))
-        plt.close();
+        fig.savefig(outputdir / f"CornerPlot{i}.pdf")
+        plt.close()
     
     
     #print("Autocorrelation time: ", sampler.get_autocorr_time())
@@ -1810,21 +1814,22 @@ class Fit():
             - lorentzian: Lorentzian function
             - boxcar: Boxcar function
     """
-    def __init__(self, datadir, objName, filters, priors, delay_ref = None, init_tau = None, init_delta=1.0,
+    def __init__(self, datadir, outputdir, objName, filters, priors, delay_ref = None, init_tau = None, init_delta=1.0,
                  delay_dist=False , psi_types = None, add_var=True, sig_level = 4.0, 
                  Nsamples=10000, Nburnin=0, include_slow_comp=False, slow_comp_delta=30.0, 
                  calc_P=False, AccDisc=False, wavelengths=None, 
-                 use_backend = False, resume_progress = False, plot_corner=False,memfunction='gaussian', gridsize = None):
+                 use_backend = False, resume_progress = False, plot_corner=False,memfunction='gaussian', gridsize = None, fix_tau = False, fixed_tau_val = None):
         
-        if datadir[-1] != '/': datadir += '/'  #Add forward slash in case it isn't there
+        datadir = Path(datadir)
         self.datadir=datadir
         self.objName=objName
         self.filters=filters
         self.gridsize = gridsize
+        self.outputdir = outputdir
         data=[]
-        for i in range(len(filters)):
-            file = datadir + str(self.objName) +"_"+ str(self.filters[i]) + ".dat"
-            data.append(np.loadtxt(file))
+        for flt in self.filters:
+            file = self.datadir/f"{self.objName}_{flt}.dat"
+            data.append(np.loadtxt(str(file)))
 
            # np.savetxt(datadir + str(self.objName) +"_"+ str(self.filters[i]) + ".dat",np.transpose([data[i][:,0], data[i][:,1], data[i][:,2]]))
             
@@ -1884,11 +1889,14 @@ class Fit():
         self.wavelengths = wavelengths
         self.use_backend = use_backend
         self.resume_progress = resume_progress
-        run = FullFit(data, self.priors, self.init_tau, self.init_delta, self.add_var, 
+
+        if fix_tau and (fixed_tau_val is None):
+            raise ValueError("如果 fix_tau=True，必须提供 fixed_tau_values！")
+        run = FullFit(data, outputdir, objName, self.priors, self.init_tau, self.init_delta, self.add_var, 
                       self.sig_level, self.Nsamples, self.Nburnin, self.include_slow_comp, 
                       self.slow_comp_delta, self.calc_P, self.delay_dist, self.psi_types, 
                       self.delay_ref_pos, self.AccDisc, self.wavelengths, self.filters, 
-                      self.use_backend, self.resume_progress,plot_corner,memfunction, self.gridsize)
+                      self.use_backend, self.resume_progress,plot_corner,memfunction, self.gridsize, fix_tau, fixed_tau_values)
 
         self.samples = run[0]
         self.samples_flat = run[1]
@@ -3214,7 +3222,7 @@ def LensFit(data, priors, init_tau, init_delta, add_var, sig_level, Nsamples, Nb
     while os.path.exists('{}{:d}.pdf'.format("CornerPlot", i)):
         i += 1
     fig.savefig('{}{:d}.pdf'.format("CornerPlot", i))
-    plt.close();
+    plt.close()
       
     
     
