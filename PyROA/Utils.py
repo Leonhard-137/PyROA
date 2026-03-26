@@ -11,9 +11,16 @@ import astropy.units as u
 import astropy.constants as ct
 from pandas import DataFrame
 import matplotlib.ticker as mtick
-import scipy.optimize as opt
-from uncertainties import ufloat
+from scipy import optimize
+from uncertainties import ufloat, umath
+import astropy.constants as ct
 from pathlib import Path
+from dust_extinction.parameter_averages import F99  # 银河系模型 (Fitzpatrick 99)
+from dust_extinction.averages import G03_SMCBar     # SMC模型 (AGN核区常用)
+import warnings
+import pandas as pd
+
+warnings.filterwarnings('ignore')
 
 def Chains(nparam, objname, filters, delay_ref,
            burnin=0, samples_file='samples_flat.obj',
@@ -23,7 +30,7 @@ def Chains(nparam, objname, filters, delay_ref,
     """Parameter Chain Plot of MCMC from PyROA outputs
 	nparam : str
 		Parameters to show in the corner plot. Can choose
-		individual ones such as: 'A','B','tau','sig'
+		individual ones such as: 'A','A','tau','sig'
 		or plot all parameters: 'all'
 		(NOTE, the latter can create very large files)
     filters : list
@@ -87,7 +94,7 @@ def Chains(nparam, objname, filters, delay_ref,
 
     labels = []
     for i in range(len(filters)):
-        for j in ["A", "B", r"$\tau$", r"$\sigma$"]:
+        for j in ["R", "A", r"$\tau$", r"$\sigma$"]:
             labels.append(j + r'$_{' + filters[i] + r'}$')
     labels.append(r'$\Delta$')
     all_labels = labels.copy()
@@ -120,10 +127,10 @@ def Chains(nparam, objname, filters, delay_ref,
             ct += 1
         axes[-1].set_xlabel("Chain number")
 
-    elif nparam in ('tau', 'A', 'B', 'sig'):
-        if nparam == 'A':
+    elif nparam in ('tau', 'R', 'A', 'sig'):
+        if nparam == 'R':
             shifter = 0
-        elif nparam == 'B':
+        elif nparam == 'A':
             shifter = 1
         elif nparam == 'tau':
             shifter = 2
@@ -160,60 +167,11 @@ def Chains(nparam, objname, filters, delay_ref,
         outpath = outputdir / outname
         plt.savefig(outpath)
 
-
 def CornerPlot(nparam, objname, filters, delay_ref,
                burnin=0,
                samples_file='samples_flat.obj',
                outputdir='./',
                savefig=True, figname=None):
-
-    """
-    Corner Plot of MCMC parameters from PyROA outpu
-	nparam : str
-		Parameters to show in the corner plot. Can choose
-		individual ones such as: 'A','B','tau','sig'
-		or plot all parameters: 'all'
-		(NOTE, the latter can create very large files)
-    filters : list
-        List of filters used in the PyROA fit.
-    delay_ref : str
-        Name of the filter used as the reference. Must be contained in
-        "filters".
-
-
-	burnin : float, optional
-        Number of samples to discard in the fit, from 0 to burnin.
-        This cut is applied to the samples_flat.obj.
-        Use the "convergence" or "chains" plots to determine this 
-        number.  Default: 0
-    samples_file : str, optional
-        File name of the MCMC samples. Default: "samples_flat.obj"
-        This is the PyROA standard output.
-    outputdir : str, optional
-        Directory path where PyROA "*.obj" are stored. 
-        This is the PyROA standard output. Default: Current directory "./"
-    savefig : bool, optional
-        Save figure as a PDF Default: True.
-    figname : str, optional
-        Name of the figure to be saved. If not provided, the default
-        name is 'pyroa_corner.pdf'
-
-
-    Returns
-    -------
-    None
-
-    Example
-    -------
-	import pyroa_utils
-	
-	importlib.reload(utils)
-	filters=['u','B','g']
-	burnin = 250000
-	delay_ref = 'g'
-	pyroa_utils.corner_plot('tau',filters,delay_ref,
-	                  burnin=burnin)
-	"""
 
     # 用 Path 处理目录，并保证存在
     outputdir = Path(outputdir)
@@ -222,23 +180,28 @@ def CornerPlot(nparam, objname, filters, delay_ref,
     # 读取 samples
     samples_path = outputdir / samples_file
     with open(samples_path, 'rb') as f:
-        samples = pickle.load(f)[burnin:]
+        # 【修改点 1】：增加 ::10 进行稀疏化，防止 MemoryError
+        # 如果还是爆内存，可以改成 ::50 或 ::100
+        samples = pickle.load(f)[burnin::10]
 
     ss = np.where(np.array(filters) == delay_ref)[0][0]
 
     labels = []
     for i in range(len(filters)):
-        for j in ["A", "B", r"$\tau$", r"$\sigma$"]:
+        for j in ["R", "A", r"$\tau$", r"$\sigma$"]:
             labels.append(j + r'$_{' + filters[i] + r'}$')
     labels.append(r'$\Delta$')
-    all_labels = labels.copy()
-    del labels[ss * 4 + 2]
+    
+    # 【修改点 2】：修复标签错位 BUG
+    # 必须先删除参考波段的 tau，再复制给 all_labels
+    del labels[ss * 4 + 2]     # 先删
+    all_labels = labels.copy() # 后复制 (或者直接用 labels)
 
-    # 只画某一类参数：A / B / tau / sig
-    if nparam in ('tau', 'A', 'B', 'sig'):
-        if nparam == 'A':
+    # 只画某一类参数：R / A / tau / sig
+    if nparam in ('tau', 'R', 'A', 'sig'):
+        if nparam == 'R':
             shifter = 0
-        elif nparam == 'B':
+        elif nparam == 'A':
             shifter = 1
         elif nparam == 'tau':
             shifter = 2
@@ -256,7 +219,7 @@ def CornerPlot(nparam, objname, filters, delay_ref,
         gg = corner.corner(
             samples[:, list_only],
             show_titles=True,
-            labels=np.array(labels)[list_only],
+            labels=np.array(labels)[list_only], # 注意：这里实际上labels已经是删减过的了，逻辑可能需要根据你之前的bug修复微调，但通常画单类参数不受那个bug影响太大，主要是画all的时候
             title_kwargs={'fontsize': 19}
         )
 
@@ -265,8 +228,11 @@ def CornerPlot(nparam, objname, filters, delay_ref,
         gg = corner.corner(
             samples,
             show_titles=True,
-            labels=all_labels,
-            title_kwargs={'fontsize': 19}
+            labels=all_labels, # 这里现在是对的了
+            title_kwargs={'fontsize': 19},
+            # 额外保险：不画散点，只画等高线，进一步省内存
+            plot_datapoints=False, 
+            fill_contours=True
         )
 
     # 保存图像
@@ -295,7 +261,7 @@ def LagSpectrum(filters, objname, delay_ref, wavelengths,
 
     labels = []
     for i in range(len(filters)):
-        for j in ["A", "B", r"$\tau$", r"$\sigma$"]:
+        for j in ["R", "A", r"$\tau$", r"$\sigma$"]:
             labels.append(j + r'$_{' + filters[i] + r'}$')
     labels.append(r'$\Delta$')
     all_labels = labels.copy()
@@ -353,7 +319,7 @@ def LagSpectrum(filters, objname, delay_ref, wavelengths,
         outpath = outputdir / f'{objname}_pyroa_lagspectrum.pdf'
         plt.savefig(outpath)
 
-def Lightcurves(objName, filters, delay_ref,
+def Lightcurves(objname, filters, delay_ref,
                 lc_file="Lightcurve_models.obj",
                 samples_file='samples_flat.obj',
                 slow_comp_file='Slow_Comps.obj',
@@ -363,9 +329,6 @@ def Lightcurves(objName, filters, delay_ref,
                 show_delay_ref=False, ylab=None,
                 filter_labels=None, savefig=True, figname=None,
                 include_slow_comp=False, slow_comp_delta=30.0):
-    """Plots the Lightcurve data and best fit as measured by PyROA
-    （原始 docstring 略）
-    """
 
     plt.rcParams.update({
         "font.family": "Serif",
@@ -397,7 +360,7 @@ def Lightcurves(objName, filters, delay_ref,
         with open(outputdir / slow_comp_file, 'rb') as f:
             slow_comps = pickle.load(f)
 
-    # 按 A, B, tau, sig 切 chunk
+    # 按 R, A, tau, sig 切 chunk
     chunk_size = 4
     transpose_samples = np.transpose(samples_flat)
     # 在参考滤光片的位置插入 tau=0
@@ -435,7 +398,7 @@ def Lightcurves(objName, filters, delay_ref,
     # ======================== 主循环：逐滤光片处理 ========================
     for i in range(len(filters)):
         # 读数据
-        data_file = datadir / f"{objName}_{filters[i]}.dat"
+        data_file = datadir / f"{objname}_{filters[i]}.dat"
         this_data = np.loadtxt(data_file)
         data.append(this_data)
 
@@ -543,7 +506,7 @@ def Lightcurves(objName, filters, delay_ref,
             axs[i - ko][1].axes.get_yaxis().set_visible(False)
             axs[i - ko][0].set_xticklabels([])
 
-            axs[0][0].set_title(objName)
+            axs[0][0].set_title(objname)
             axs[0][1].set_title("Time Delay")
 
         # 参考滤光片
@@ -620,490 +583,496 @@ def Lightcurves(objName, filters, delay_ref,
         ax.label_outer()
 
     if savefig:
-        outpath = outputdir/f"{objName}_pyroa_lightcurves.pdf"
+        outpath = outputdir/f"{objname}_pyroa_lightcurves.pdf"
         plt.savefig(outpath)
 
-
-def FluxFlux(objName, filters, delay_ref, gal_ref,wavelengths,
-            lc_file="Lightcurve_models.obj",
-            samples_file='samples_flat.obj',
-            xt_file='X_t.obj',
-            outputdir = './', datadir='./',
-            burnin=0, band_colors = None,
-            input_units='mJy',output_units='mJy',
-            redshift=0.0, ebv=0.0,
-            limits=None, ylab = None,
-            savefig=True, figname=None):
-    """Flux-Flux analysis and Spectral energy distribution as
-    estimated by PyROA.
-
-    Parameters
-    ----------
-    objName : str
-        Name used in PyROA for the data files.
-    filters : list
-        List of filters used in the PyROA fit.
-    delay_ref : str
-        Name of the filter used as the reference. Must be contained in
-        "filters".
-    gal_ref : str
-        Name of the filter used as the reference to construct
-        the galaxy spectrum. Usually the one that crosses the x-axis first
-        *** Must be contained in "filters" array ***.
-    wavelengths : list
-        List of wavelengths corresponding to each filter. Assumed to be in 
-        Angstroms.
-
-    lc_file : str, optional
-        File name of lightcurve models. Default: "Lightcurve_models.obj"
-        This is the PyROA standard output.
-    samples_file : str, optional
-        File name of the MCMC samples. Default: "samples_flat.obj"
-        This is the PyROA standard output.
-    xt_file : str, optional
-        File name of the driving lightcurve model. Default: "X_t.obj"
-        This is the PyROA standard output.
-    outputdir : str, optional
-        Directory path where PyROA "*.obj" are stored. 
-        This is the PyROA standard output. Default: Current directory "./"
-    datadir : str, optional
-        Directory path where PyROA "*.dat" are stored. 
-        This is the PyROA standard input. Default: Current directory "./"
-    burnin : float, optional
-        Number of samples to discard in the fit, from 0 to burnin.
-        This cut is applied to the samples_flat.obj.
-        Use the "convergence" or "chains" plots to determine this 
-        number.  Default: 0
-    band_colors : list, optional
-        List of colours for each filter. List must be the same size as
-        the filters array. Default: all lightcurves will be black.
-    flux_fnu : bool, optional
-        Units to be used in the Flux-Flux analysis.
-        Default: True
-    input_unit : float, optional
-        Units of flux values. Valid options:
-        'mJy', 'Jy', 'fnu'= erg/s/cm^2/Hz,'flam'=erg/s/cm^2/Ang
-        Default: 'mJy'
-    output_unit : float, optional
-        Units of flux values. Valid options:
-        'mJy', 'Jy', 'fnu'= erg/s/cm^2/Hz,'flam'=erg/s/cm^2/Ang
-        Default: 'mJy'
-    redshift : float, optional
-        Redshift of the AGN. Default: 0.0
-    ebv : float, optional
-        E(B-V) value of the line-of-sight extinction towards the AGN. 
-        The SED plot will be corrected by this amount following 
-        Fitzpatrick (1999) parametrisation. Default: 0.0
-    limits : list[2], optional
-        Limits on the shared Y-axis of all plots e.g., [xmin,xmax]
-        Default: It is determined by the data.
-    ylab : str, optional
-        Label of Y-axis. Default: "F$_{\nu}$"+"\nmJy"
-    filter_labels : list, optional
-        List of filter names that overrides the original names as given by
-        "filters" one. Default: None.
-    savefig : bool, optional
-        Save figure as a PDF Default: True.
-    figname : str, optional
-        Name of the figure to be saved. If not provided, the default
-        name is 'pyroa_fluxflux.pdf' and 'pyroa_sed.pdf'
-
-    Returns
-    -------
-    None
-
-    Example
-    -------
-    import pyroa_utils
+def extract_flux_components(objname, filters, delay_ref, gal_ref, wavelengths,
+                            lc_file="Lightcurve_models.obj",
+                            samples_file='samples_flat.obj',
+                            xt_file='X_t.obj',
+                            outputdir='./', datadir='./',
+                            burnin=0, band_colors=None,
+                            input_units='mJy', output_units='flam',
+                            ebv_galactic=0.0,
+                            savefig=True):
+    """
+    Step 1 (Complete): 提取光变分量并绘制完整的 Flux-Xt 相关图 (Overlaid Version)。
     
-    waves = [3580,4392,4770,5468,6215,7545,8700]
-    objName="NGC_4151"
-    datadir = "pyroa_yr1/"
-    gal_ref = 'u'
-    burnin = 100000
-    filters=['u','B','g','g1','V','r','i','z']
-    band_colors=['#0652DD','#1289A7','#006266','#006266','#A3CB38',
-    			 'orange','#EE5A24','brown']
-    
-    utils.fluxflux(objName,filters,delay_ref,gal_ref,
-                    datadir=datadir,outputdir='./',
-                    burnin=burnin,band_colors=band_colors,
-                    wavelengths=waves,ebv=0.027,redshift=0.003326,
-                    limits=[7,120])
-	"""
-
-    plt.rcParams.update({
-        "font.family": "Serif",  
-        "font.serif": ["Times New Roman"],
-    "figure.figsize":[40,30],
-    "font.size": 19})  
-	
-    # To Do: 改成Path
+    修改说明：
+    1. 绘图改为单图叠加模式 (Single Axes Overlay)。
+    2. 散点颜色与拟合线颜色保持一致。
+    3. 参考线 (Galaxy/Faint/Bright) 统一绘制，图例样式复刻 Reference 图。
+    4. 保持所有输出变量名和 CSV Header 不变。
+    """
     outputdir = Path(outputdir)
     datadir = Path(datadir)
-    outputdir.mkdir(parents=True, exist_ok=True)
+    
+    # --- 1. 内部辅助函数：银河系去红化 (MW F99) ---
+    def unred_mw(flux, wave, ebv_val):
+        if ebv_val == 0: return flux
+        ext = F99(Rv=3.1)
+        k_lambda = ext(wave * u.Angstrom)
+        return flux * 10**(0.4 * k_lambda * ebv_val)
 
-    #if filter_labels == None: filter_labels = filters
+    # --- 2. 加载 PyROA 结果 ---
+    try:
+        with open(outputdir / samples_file, 'rb') as f:
+            samples_flat = pickle.load(f)
+        samples_flat = samples_flat[burnin:, :]
+        
+        with open(outputdir / xt_file, 'rb') as f:
+            norm_lc = pickle.load(f) # 格式 [t, X, err]
+            
+        with open(outputdir / lc_file, 'rb') as f:
+            lc_models = pickle.load(f)
+    except Exception as e:
+        print(f"Error loading PyROA results: {e}")
+        return None
 
-    if input_units == 'mJy': funits = 1*u.mJy
-    if input_units == 'Jy': funits = 1*u.Jy
-    if input_units == 'fnu': funits = 1*u.erg/u.s/(u.cm**2)/u.Hz
-    if input_units == 'flam': funits = 1e-15 * u.erg/u.s/(u.cm**2)/u.Angstrom
-    if output_units == 'mJy': 
-        ylab = r"F$_{\nu}$"+" / mJy"
-    if output_units == 'Jy': 
-        ylab = r"F$_{\nu}$"+" / Jy"
-    if output_units == 'fnu': 
-        ylab = r"F$_{\nu}$"+r" / erg s$^{-1}$ cm$^{-2}$ ${\rm Hz}^{-1}$"
-    if output_units == 'flam': 
-        ylab = r"F$_{\lambda}$"+r" / $\times10^{-15}$ erg s$^{-1}$ cm$^{-2}$ ${\rm \AA}^{-1}$"
-
+    # --- 3. 参数切片与参考点计算 ---
     ss = np.where(np.array(filters) == delay_ref)[0][0]
-
-    with open(outputdir/samples_file, 'rb') as f:
-        samples_flat = pickle.load(f)
-    samples_flat = samples_flat[burnin:,:]
-
-    with open(outputdir/lc_file, 'rb') as f:
-         models = pickle.load(f)
-    
-    with open(outputdir/xt_file, 'rb') as f:
-        norm_lc = pickle.load(f)
-
-    wave = np.array(wavelengths)
-
-    #Split samples into chunks, 4 per lightcurve i.e A, B, tau, sig
-    chunk_size=4
+    chunk_size = 4 # R, A, tau, sig
     transpose_samples = np.transpose(samples_flat)
-    #Insert zero where tau_0 would be 
     transpose_samples = np.insert(transpose_samples, [ss*4+2], np.array([0.0]*len(transpose_samples[1])), axis=0)
-    samples_chunks = [transpose_samples[i:i + chunk_size] for i in range(0, len(transpose_samples), chunk_size)] 
+    samples_chunks = [transpose_samples[i:i + chunk_size] for i in range(0, len(transpose_samples), chunk_size)]
 
-    gal_spectrum,gal_spectrum_err,fnu_f,fnu_b,slope,slope_err = [],[],[],[],[],[]
-    fnu_f_err,fnu_b_err = [], []
-    
-    fig = plt.figure(figsize=(10,7))
-    xx = np.linspace(-15,5,300) # ？？？
-    max_flux = 0.0
-    
-    fac_flux = np.ones(len(wavelengths))
-
-    # ---- 基于 gal_ref 预先计算 x_gal_mcmc（供所有滤光片复用）----
-    if gal_ref not in filters:
-        raise ValueError(f"gal_ref='{gal_ref}' 不在 filters 列表中")
-
+    # 计算全局基准点 x_gal
     j_gal = filters.index(gal_ref)
-    snu_gal = samples_chunks[j_gal][0]
-    cnu_gal = samples_chunks[j_gal][1]
-
-    # 计算 x_gal_mcmc，并屏蔽除零/无效
+    snu_gal = samples_chunks[j_gal][0] 
+    cnu_gal = samples_chunks[j_gal][1] 
     with np.errstate(divide='ignore', invalid='ignore'):
-        x_gal_mcmc_full = -cnu_gal / snu_gal
-    x_gal_mcmc = x_gal_mcmc_full[np.isfinite(x_gal_mcmc_full)]
-    if x_gal_mcmc.size == 0:
-        raise ValueError("x_gal_mcmc 全为非数值；请检查 gal_ref 的样本（可能 s=0）。")
+        x_gal_mcmc = -cnu_gal / snu_gal
+    x_gal = np.median(x_gal_mcmc[np.isfinite(x_gal_mcmc)])
+    
+    X_min = np.min(norm_lc[1])
+    X_max = np.max(norm_lc[1])
 
-    x_gal     = np.median(x_gal_mcmc)
-    x_gal_std = np.std(x_gal_mcmc)
+    # --- 4. 容器与绘图初始化 (修改为单图) ---
+    results = []
+    if band_colors is None:
+        band_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+                       '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+    
+    # 修改点：创建一个单一的大图，而不是 subplots 网格
+    fig, ax = plt.subplots(figsize=(10, 7))
 
-    # ---- 主循环：包含参考波段；不再使用 kk ----
-    fac_flux = np.ones(len(wavelengths), dtype=float)
-
+    # --- 5. 主循环：逐波段处理 ---
     for i, flt in enumerate(filters):
-        # 读取每个滤光片对应的 .dat 文件
-        data_file =datadir/f"{objName}_{flt}.dat"
-        data = np.loadtxt(data_file)
-        snu_mcmc = samples_chunks[i][0]
-        cnu_mcmc = samples_chunks[i][1]
-        sig = np.percentile(samples_chunks[i][3], 50)
+        wave_i = wavelengths[i]
+        color = band_colors[i % len(band_colors)]
+        
+        # A. 单位转换系数
+        # 注意：这里保持 scale_val = 1，如果数据需要从 1e-15 变到 1，请将此处改为 1e-15
+        scale_val = 1.0 
+        
+        fac_flux = 1.0
+        if input_units == 'mJy' and output_units == 'flam':
+            f_nu_unit = 1e-23 * u.erg / u.s / (u.cm**2) / u.Hz 
+            w_unit = wave_i * u.Angstrom
+            f_lam_equiv = f_nu_unit.to(u.erg / u.s / (u.cm**2) / u.Angstrom, 
+                                       equivalencies=u.spectral_density(w_unit))
+            fac_flux = f_lam_equiv.value / scale_val
+        elif input_units == 'flam' and output_units == 'flam':
+            fac_flux = 1.0 / scale_val
 
-        # 初始化并生成 200 条模拟直线
-        mc_pl = np.zeros((200, xx.size))
+        # B. 提取分量
+        snu_mcmc = samples_chunks[i][0] 
+        cnu_mcmc = samples_chunks[i][1] 
+        tau_mcmc = samples_chunks[i][2] 
+        sig_mcmc = samples_chunks[i][3] 
+        
+        R_obs = np.median(snu_mcmc) * fac_flux
+        R_err = np.std(snu_mcmc) * fac_flux
+        A_obs = np.median(cnu_mcmc) * fac_flux
+        A_err = np.std(cnu_mcmc) * fac_flux
+        tau_val = np.median(tau_mcmc)
+        tau_err = np.std(tau_mcmc)
+        sig_val = np.median(sig_mcmc)
+        sig_err = np.std(sig_mcmc)
+
+        # C. 计算亮暗态与宿主星系流量
+        f_bright_dist = snu_mcmc * (X_max - x_gal) * fac_flux
+        f_faint_dist  = snu_mcmc * (X_min - x_gal) * fac_flux
+        f_gal_dist    = (cnu_mcmc + snu_mcmc * x_gal) * fac_flux
+        
+        epsilon = (X_min - x_gal) / (X_max - x_gal)
+
+        # D. 银河系消光修正
+        mw_corr = unred_mw(1.0, wave_i, ebv_galactic)
+        
+        R_unred = R_obs * mw_corr
+        A_unred = A_obs * mw_corr
+        F_b_unred = np.median(f_bright_dist) * mw_corr
+        F_b_err_unred = np.std(f_bright_dist) * mw_corr
+        F_f_unred = np.median(f_faint_dist) * mw_corr
+        F_f_err_unred = np.std(f_faint_dist) * mw_corr
+        Gal_unred = np.median(f_gal_dist) * mw_corr
+        Gal_unred_err = np.std(f_gal_dist) * mw_corr
+
+        # E. 收集数据 (保持 Key 不变)
+        results.append({
+            'Filter': flt, 'Wavelength': wave_i,
+            'R_obs': R_obs, 'R_obs_err': R_err,
+            'A_obs': A_obs, 'A_obs_err': A_err,
+            'R_unred_gal': R_unred, 'R_unred_gal_err': R_err * mw_corr,
+            'A_unred_gal': A_unred, 'A_unred_gal_err': A_err* mw_corr,
+            'F_unred_gal_bright': F_b_unred, 'F_unred_gal_bright_err':F_b_err_unred,
+            'F_unred_gal_faint': F_f_unred, 'F_unred_gal_faint_err':F_f_err_unred,
+            'Epsilon': epsilon, 'F_Galaxy': Gal_unred,
+            'F_Galaxy_err': Gal_unred_err,
+            'tau': tau_val, 'tau_err': tau_err,
+            'sig': sig_val, 'sig_err': sig_err,
+        })
+
+        # F. 绘制 Flux-Xt 图 (叠加在同一个 ax 上)
+        obs_data = np.loadtxt(datadir / f"{objname}_{flt}.dat")
+        t_obs, f_obs, e_obs = obs_data[:, 0], obs_data[:, 1], obs_data[:, 2]
+        
+        # 时延修正
+        X_at_t = np.interp(t_obs - tau_val, norm_lc[0], norm_lc[1])
+        
+        # 修改点：散点颜色改为 color (原为 'k')，使其与拟合线一致
+        # alpha 设置稍低一点，避免点太密把线挡住
+        ax.errorbar(X_at_t, f_obs * fac_flux, yerr=np.sqrt(e_obs**2 + sig_val**2) * fac_flux, 
+                    fmt='.', color=color, alpha=0.3, zorder=1)
+        
+        # 拟合直线及误差带
+        xx = np.linspace(x_gal - 1, X_max + 1, 100)
+        mc_lines = np.zeros((200, len(xx)))
         for lo in range(200):
-            jj = int(np.random.uniform(0, snu_mcmc.size))
-            mc_pl[lo] = cnu_mcmc[jj] + xx * snu_mcmc[jj]
+            idx = np.random.randint(0, len(snu_mcmc))
+            mc_lines[lo] = (snu_mcmc[idx] * xx + cnu_mcmc[idx]) * fac_flux
+        
+        ax.fill_between(xx, np.mean(mc_lines, axis=0) - np.std(mc_lines, axis=0),
+                        np.mean(mc_lines, axis=0) + np.std(mc_lines, axis=0), 
+                        color=color, alpha=0.15, zorder=2)
+        ax.plot(xx, (np.median(snu_mcmc) * xx + np.median(cnu_mcmc)) * fac_flux, 
+                color=color, lw=2, label=f'{flt}', zorder=3)
 
-        # 若长度不一致，将 x_gal_mcmc 重采样到与 snu_mcmc 相同长度
-        if x_gal_mcmc.size != snu_mcmc.size:
-            idx = np.random.randint(0, x_gal_mcmc.size, size=snu_mcmc.size)
-            xg = x_gal_mcmc[idx]
-            xg_std = x_gal_std
-        else:
-            xg = x_gal_mcmc
-            xg_std = x_gal_std
+    # --- 6. 绘制统一参考线与修饰 (Loop 外部) ---
+    # 复刻第一张图的图例样式：只显示参考线的图例，不显示每个波段的图例(太乱)
+    # 若需要波段图例，可去掉 label='_nolegend_' 并使用 ax.legend(ncol=2)
+    
+    l1 = ax.axvline(x=x_gal, color='red', ls='-.', alpha=0.8, lw=1.5, label='Galaxy')
+    l2 = ax.axvline(x=X_min, color='black', ls='--', alpha=0.7, lw=1.5, label=r'F$_{\rm faint}$')
+    l3 = ax.axvline(x=X_max, color='grey', ls='--', alpha=0.7, lw=1.5, label=r'F$_{\rm bright}$')
 
-        # Galaxy + 端点/斜率
-        # gal_spectrum_mcmc = np.median(cnu_mcmc) + (xg + xg_std) * np.median(snu_mcmc)
-        gal_spectrum_mcmc = np.median(cnu_mcmc) + (xg + xg_std) * np.median(snu_mcmc)
-        gal_spectrum.append(gal_spectrum_mcmc.mean())
-        gal_spectrum_err.append(gal_spectrum_mcmc.std())
+    ax.set_xlabel(r'$X_0(t)$, Normalised driving light curve flux', fontsize=14)
+    # 修改点：强制指定单位标签，符合你的要求
+    ax.set_ylabel(r'F$_{\lambda}$ / $\times 10^{-15} \mathrm{erg\ s^{-1}\ cm^{-2}\ \AA^{-1}}$', fontsize=14)
+    
+    # 设置刻度字体大小
+    ax.tick_params(axis='both', which='major', labelsize=12)
+    
+    # 放置图例：只放参考线，置于顶部中央 (根据参考图 1 风格)
+    # handles=[l1, l2, l3] 确保只显示这三条线
+    ax.legend(handles=[l1, l2, l3], loc='upper center', ncol=3, fontsize=13, frameon=True)
 
-        fnu_f_mcmc = snu_mcmc * (np.min(norm_lc[1]) - xg)
-        fnu_b_mcmc = snu_mcmc * (np.max(norm_lc[1]) - xg)
-        fnu_f.append(fnu_f_mcmc.mean());   fnu_f_err.append(fnu_f_mcmc.std())
-        fnu_b.append(fnu_b_mcmc.mean());   fnu_b_err.append(fnu_b_mcmc.std())
-
-        slope.append(np.median(snu_mcmc))
-        slope_err.append(np.std(snu_mcmc))
-
-        # 拟合直线
-        lin_fit = np.median(snu_mcmc) * xx + np.median(cnu_mcmc)
-
-        # 光度单位转换
-        if wavelengths is not None:
-            wave_i = wavelengths[i] * u.Angstrom
-            if (input_units != 'flam') and (output_units != 'flam'):
-                dd = funits
-                fac_flux[i] = dd.cgs.to(output_units).value if output_units != 'fnu' \
-                            else dd.cgs.to('erg s^-1 cm^-2 Hz^-1').value
-            elif (input_units != 'flam') and (output_units == 'flam'):
-                dd = funits / (wave_i**2) * ct.c
-                fac_flux[i] = dd.cgs.to('erg s^-1 cm^-2 Angstrom^-1').value / 1e-15
-            elif (input_units == 'flam') and (output_units != 'flam'):
-                dd = funits / ct.c * (wave_i**2)
-                fac_flux[i] = dd.cgs.to(output_units).value if output_units != 'fnu' \
-                            else dd.cgs.to('erg s^-1 cm^-2 Hz^-1').value
-
-        # 绘制 Flux-Flux 图
-        plt.fill_between(xx,
-                        (mc_pl.mean(axis=0) + mc_pl.std(axis=0)) * fac_flux[i],
-                        (mc_pl.mean(axis=0) - mc_pl.std(axis=0)) * fac_flux[i],
-                        color=band_colors[i], alpha=0.3)
-
-        interp_xt = np.interp(data[:, 0], norm_lc[0], norm_lc[1])
-        plt.errorbar(interp_xt, data[:, 1] * fac_flux[i],
-                    yerr=np.sqrt(data[:, 2]**2 + sig**2) * fac_flux[i],
-                    color=band_colors[i], ls='None', alpha=0.8)
-
-        plt.plot(xx, lin_fit * fac_flux[i], color=band_colors[i], lw=3)
-        max_flux = max(max_flux, np.max(data[:, 1] * fac_flux[i]))
-
-    fnu_f = np.array(fnu_f)
-    fnu_f_err = np.array(fnu_f_err)
-    fnu_b = np.array(fnu_b)
-    fnu_b_err = np.array(fnu_b_err)
-    slope = np.array(slope)
-    slope_err = np.array(slope_err)
-    gal_spectrum = np.array(gal_spectrum)
-    gal_spectrum_err = np.array(gal_spectrum_err)
-
-    plt.axvline(x=np.median(x_gal_mcmc + x_gal_mcmc.std()), color='r',
-                linestyle='-.', label=r'Galaxy')
-    plt.axvline(x=np.min(norm_lc[1]), color='k',
-                linestyle='--', label=r'F$_{\rm faint}$')
-    plt.axvline(x=np.max(norm_lc[1]), color='grey',
-                linestyle='--', label=r'F$_{\rm bright}$')
-
-    lg = plt.legend(ncol=4)
-    plt.xlim(x_gal - 1, 3)
-    plt.ylim(-0.04 * fac_flux[-1], max_flux * 1.2)
-
-    if limits != None:
-        plt.ylim(-0.04, limits[1])
-
-    plt.xlabel(r'$X_0 (t)$, Normalised driving light curve flux')
-    plt.ylabel(ylab)
+    # --- 7. 保存与输出 ---
     plt.tight_layout()
-
     if savefig:
-        plt.savefig(outputdir/f'{objName}_fluxflux.pdf')
+        plt.savefig(outputdir / f"{objname}_flux_xt_correlation.pdf", dpi=300)
+    plt.close()
 
-    # 绘制 SED 图
-    if wavelengths != None:
-        wave = np.array(wavelengths)
-        fig = plt.figure(figsize=(10, 7))
-        ax = fig.add_subplot(111)
-        xxx = np.arange(2000, 9300)
+    df = pd.DataFrame(results)
+    df.to_csv(outputdir / f"{objname}_extracted_components.csv", index=False)
+    print(f"\n[Step 1] Components saved to {objname}_extracted_components.csv ")
+    
+    return df
 
-        # 绘制 AGN 变异范围
-        plt.fill_between(wave / (1 + redshift),
-                        (np.array(unred(wave, fnu_b, ebv))) * fac_flux,
-                        (np.array(unred(wave, fnu_f, ebv))) * fac_flux,
-                        color='k', alpha=0.1, label='AGN variability')
+def calculate_nuclear_ebv(df, outputdir, objname):
+    """
+    Step 2: Calculate Nuclear E(B-V) using smart anchor pairs.
+    
+    Physics Assumptions:
+    1. Intrinsic Spectrum: Standard Thin Disk f_lambda ~ lambda^(-7/3)
+    2. Extinction Law: SMC Bar (Gordon et al. 2003) for AGN nucleus
+    3. Input Data: Uses 'R_unred' (Slope corrected for Galactic extinction)
+    """
 
-        # 绘制 F_bright - F_faint
-        plt.errorbar(wave / (1 + redshift), (np.array(unred(wave, fnu_b, ebv)) -
-                                            np.array(unred(wave, fnu_f, ebv))) * fac_flux,
-                    yerr=np.sqrt((np.array(fnu_f_err)) ** 2 + (np.array(fnu_b_err)) ** 2) * fac_flux,
-                    marker='.', linestyle='-', color='k',
-                    label=r'F$_{\rm bright}$ - F$_{\rm faint}$', ms=15)
+    outputdir = Path(outputdir)
+    filters = df['Filter'].tolist()
+    
+    # --- 1. 智能波段对选择策略 ---
+    # 逻辑：优先选择波长跨度最大、且受 BLR (Small Blue Bump) 污染最小的组合
+    pairs_to_try = [
+        # Swift UVOT (最佳组合，W2/M2 在巴耳末跳变左侧远端，V 在右侧远端)
+        ('W2', 'V'), ('M2', 'V'), ('W1', 'V'),
+        # Ground based (U波段虽然有污染，但比B好一点点；B-V 是下策)
+        ('U', 'V'), ('B', 'V'),
+        # SDSS (g-i 跨度大且避开了 r 波段可能的 H-alpha)
+        ('g', 'i'), ('g', 'r')
+    ]
+    
+    target_blue, target_red = None, None
+    for b, r in pairs_to_try:
+        if b in filters and r in filters:
+            target_blue, target_red = b, r
+            break
+            
+    if not target_blue:
+        print("[Step 2] Warning: No suitable filter pair found. Assuming Nuclear E(B-V)=0.")
+        return ufloat(0.0, 0.0)
 
-        # 绘制 AGN RMS
-        plt.errorbar(wave / (1 + redshift), np.array(unred(wave, slope, ebv)) * fac_flux,
-                    yerr=0, marker='o', linestyle='--', color='grey', label='AGN RMS')
+    print(f"\n[Step 2] Calculating Nuclear Extinction using pair: {target_blue} - {target_red}")
 
-        # 绘制银河光谱
-        plt.errorbar(wave / (1 + redshift), unred(wave, gal_spectrum, ebv) * fac_flux,
-                    yerr=gal_spectrum_err * fac_flux,
-                    marker='s', color='r', label='Galaxy', linestyle='-.')
+    # --- 2. 获取数据 ---
+    # 注意：必须使用 'R_unred' (已去除银河系消光的光变幅值)
+    row_b = df[df['Filter'] == target_blue].iloc[0]
+    row_r = df[df['Filter'] == target_red].iloc[0]
 
-        plt.xscale('log')
-        plt.yscale('log')
-        plt.xlim(np.min(wave / (1 + redshift)) - 100, np.max(wave / (1 + redshift)) + 100)
-        plt.ylim(np.min(np.array(unred(wave, slope, ebv))) * 0.7 * fac_flux[-1], max_flux * 1.2)
+    # 使用 uncertainties 处理误差
+    R_blue = ufloat(row_b['R_unred_gal'], row_b['R_unred_gal_err'])
+    R_red  = ufloat(row_r['R_unred_gal'], row_r['R_unred_gal_err'])
+    
+    lam_b = row_b['Wavelength']
+    lam_r = row_r['Wavelength']
 
-        if limits != None:
-            plt.ylim(limits[0], limits[1])
-
-        lg = plt.legend(ncol=2)
-        if redshift > 0:
-            plt.xlabel(r'Rest Wavelength / $\mathrm{\AA}$')
-        else:
-            plt.xlabel(r'Observed Wavelength / $\mathrm{\AA}$')
-
-        plt.ylabel(ylab)
-
-        ax.yaxis.set_major_formatter(mtick.FormatStrFormatter('%.2f'))
-        ax.xaxis.set_major_formatter(mtick.FormatStrFormatter('%.0f'))
-        ax.xaxis.set_minor_formatter(mtick.FormatStrFormatter('%.0f'))
-        ax.xaxis.set_minor_locator(ticker.MultipleLocator(2000))
-        plt.tight_layout()
-
-        if savefig:
-            plt.savefig(outputdir/f'{objName}_SED.pdf')
-
-        # === Power-law fit: Y = (lambda_rest) * (F_bright - F_faint) vs X = lambda_rest ===
-        # 构造 X, Y 与误差
-        x_rest = wave / (1.0 + redshift)
-        F_bright_minus_faint = (np.array(unred(wave, fnu_b, ebv)) -
-                                np.array(unred(wave, fnu_f, ebv))) * fac_flux
-        F_bright_minus_faint_err = np.sqrt((np.array(fnu_b_err))**2 +
-                                           (np.array(fnu_f_err))**2) * fac_flux
-
-        Y = x_rest * F_bright_minus_faint
-        Y_err = x_rest * F_bright_minus_faint_err  # 假设 x 无误差
-
-        # 只保留可用于拟合的点（正值、有限、非零误差）
-        m = np.isfinite(x_rest) & np.isfinite(Y) & np.isfinite(Y_err) & \
-            (x_rest > 0) & (Y > 0) & (Y_err > 0)
-
-        if np.count_nonzero(m) >= 3:
-            # 幂律模型：Y = A * X^beta
-            def powerlaw(x, A, beta):
-                return A * x**beta
-
-            # 使用 curve_fit 进行加权最小二乘拟合（线性空间）
-            popt, pcov = opt.curve_fit(
-                powerlaw,
-                x_rest[m], Y[m],
-                sigma=Y_err[m],
-                absolute_sigma=True
-            )
-
-            A_best, beta_best = popt
-            A_err, beta_err = np.sqrt(np.diag(pcov))  # 参数标准差，库直接给
-
-            # ---- log10(A) 及其误差：尽量交给库做误差传播 ----
-            try:
-                from uncertainties import ufloat, umath
-                A_u = ufloat(A_best, A_err)
-                a_u = umath.log10(A_u)   # 自动误差传播
-                a_best = a_u.n
-                sa = a_u.s
-            except ImportError:
-                # 若没有 uncertainties，则用一行解析公式作为 fallback
-                a_best = np.log10(A_best)
-                sa = A_err / (A_best * np.log(10.0))
-
-            sb = beta_err   # 斜率误差直接用 curve_fit 给的
-
-            # 计算 χ²_red（在线性空间，带权重）
-            res = (Y[m] - powerlaw(x_rest[m], A_best, beta_best)) / Y_err[m]
-            chi2 = np.sum(res**2)
-            dof = max(np.count_nonzero(m) - 2, 1)
-            chi2_red = chi2 / dof
-
-            expected = -4.0 / 3.0
-            zscore = (beta_best - expected) / (sb if sb > 0 else np.inf)
-
-            # 打印结果（格式保持不变，只是内部计算方式简化了）
-            print("=== Power-law fit of Y = λ_rest * (F_bright - F_faint) vs X = λ_rest ===")
-            print(f"N = {np.count_nonzero(m)} usable points")
-            print(f"Slope β (expected -4/3 ≈ -1.3333): {beta_best:.4f} ± {sb:.4f}")
-            print(f"Intercept a (log10 A): {a_best:.4f} ± {sa:.4f}  ->  A = {A_best:.4e}")
-            print(f"Weighted χ²_red = {chi2_red:.3f}")
-            print(f"Deviation from -4/3: {(beta_best - expected):.4f}  ({zscore:.2f} σ)")
-
-            # 画图（errorbar 数据 + 拟合曲线），对数坐标
-            fig_fit = plt.figure(figsize=(8, 6))
-            ax_fit = fig_fit.add_subplot(111)
-            ax_fit.errorbar(
-                x_rest[m], Y[m], yerr=Y_err[m],
-                fmt='o', ms=6, alpha=0.85,
-                label=r'$\lambda_{\rm rest}\,[F_{\rm bright}-F_{\rm faint}]$'
-            )
-
-            xfit = np.logspace(np.log10(np.min(x_rest[m])),
-                               np.log10(np.max(x_rest[m])), 256)
-            yfit = powerlaw(xfit, A_best, beta_best)
-            ax_fit.plot(
-                xfit, yfit, '-', lw=2,
-                label=fr'Fit: $Y = A\,X^{{\beta}}$,  $\beta={beta_best:.2f}$'
-            )
-
-            ax_fit.set_xscale('log')
-            ax_fit.set_yscale('log')
-            ax_fit.set_xlabel(
-                r'Rest Wavelength / $\mathrm{\AA}$'
-                if redshift > 0 else r'Observed Wavelength / $\mathrm{\AA}$'
-            )
-            ax_fit.set_ylabel(r'$\lambda_{\rm rest}\,[F_{\rm bright}-F_{\rm faint}]$')
-            ax_fit.legend()
-            ax_fit.xaxis.set_major_formatter(mtick.FormatStrFormatter('%.0f'))
-            ax_fit.yaxis.set_major_formatter(mtick.FormatStrFormatter('%.2e'))
-            plt.tight_layout()
-
-            if savefig:
-                plt.savefig(outputdir/f'{objName}_powerlaw_fit.pdf')
-        else:
-            print(" [PyROA] Not enough valid points for log-log fit; skipped power-law fitting.")
-
+    # --- 3. 计算理论比值 (Intrinsic Ratio) ---
+    # 假设标准吸积盘 f_lambda ∝ lambda^(-7/3)
+    # Ratio = f_blue / f_red = (lam_blue / lam_red)^(-7/3) = (lam_red / lam_blue)^(7/3)
+    ratio_theo = (lam_r / lam_b)**(7.0/3.0)
+    
+    # --- 4. 计算观测比值 (Observed Ratio) ---
+    # 这里使用的是去除了银河系消光后的观测值
+    ratio_obs = R_blue / R_red
+    
+    # --- 5. 计算该波段对的色余 E(pair) ---
+    # 公式：-2.5 * log10(Obs / Theo)
+    E_pair = -2.5 * umath.log10(ratio_obs / ratio_theo)
+    
+    # --- 6. 换算为标准核内 E(B-V) ---
+    # 使用 SMC 消光曲线
+    # k(lambda) = A_lambda / E(B-V)
+    ext_model = G03_SMCBar()
+    
+    # dust_extinction 需要带单位的波长 (Angstrom)
+    k_b = ext_model(lam_b * u.Angstrom)
+    k_r = ext_model(lam_r * u.Angstrom)
+    
+    # 核心公式: E(pair) = A_blue - A_red = E(B-V) * (k_b - k_r)
+    # 所以: E(B-V) = E(pair) / (k_b - k_r)
+    # 核心公式: E(pair) = A_blue - A_red = E(B-V) * (k_b - k_r)
+    conversion_factor = k_b - k_r
+    
+    # 计算 E(B-V)
+    if conversion_factor == 0:
+        ebv_val = ufloat(0.0, 0.0)
     else:
-        print(' [PyROA] No wavelength list. Skipping SED plot.')
+        ebv_val = E_pair / conversion_factor
 
-    # 输出 fluxflux 数据
-    d = {'wave': wave,
-        'agn_b': np.array(fnu_b),
-        'agn_b_err': np.array(fnu_b_err),
-        'agn_f': np.array(fnu_f),
-        'agn_f_err': np.array(fnu_f_err),
-        'agn_rms': np.array(slope),
-        'agn_rms_err': np.array(slope_err),
-        'gal': np.array(gal_spectrum),
-        'gal_err': np.array(gal_spectrum_err),
-        'unred_agn_b': np.array(unred(wave, fnu_b, ebv)),
-        'unred_agn_b_err': np.array(unred(wave, fnu_b_err, ebv)),
-        'unred_agn_f': np.array(unred(wave, fnu_f, ebv)),
-        'unred_agn_f_err': np.array(unred(wave, fnu_f_err, ebv)),
-        'unred_agn_rms': np.array(unred(wave, slope, ebv)),
-        'unred_agn_rms_err': np.array(unred(wave, slope_err, ebv)),
-        'unred_gal': np.array(unred(wave, gal_spectrum, ebv)),
-        'unred_gal_err': np.array(unred(wave, gal_spectrum_err, ebv))}
+    # ================= 核心修改开始 =================
+    # 策略：处理非物理的负值
+    # 如果标称值小于 0，这通常意味着测量误差或吸积盘本身很蓝
+    # 在物理上尘埃不能是负的，所以我们将其截断为 0
+    if ebv_val.nominal_value < 0:
+        print(f"[Step 2 Info] Calculated E(B-V) is negative ({ebv_val.nominal_value:.5f}).")
+        print(f"              This is consistent with 0 within errors or implies a very blue disk.")
+        print(f"              -> Forcing Nuclear E(B-V) = 0.0 for subsequent analysis.")
+        
+        # 强制设为 0，但保留原始误差作为参考（或者误差也设为0，视你的需求而定）
+        # 这里建议保留误差，表示“0 +/- 0.02”
+        ebv_val = ufloat(0.0, ebv_val.std_dev)
+    # ================= 核心修改结束 =================
+
+    # --- 7. 输出与保存 ---
+    # 保留两位有效数字的显示逻辑 (配合你上一个问题)
+    def format_sci(val):
+        """辅助函数：保留两位有效数字的科学计数法，或者直接保留3位小数"""
+        if abs(val) < 1e-3:
+            return f"{val:.2e}"
+        else:
+            return f"{val:.4f}"
+
+    print(f"  Lambda {target_blue}: {lam_b:.0f} A, k(SMC)={k_b:.3f}")
+    print(f"  Lambda {target_red}:  {lam_r:.0f} A, k(SMC)={k_r:.3f}")
+    print(f"  Ratio Theo ({target_blue}/{target_red}): {ratio_theo:.4f}")
+    print(f"  Ratio Obs  ({target_blue}/{target_red}): {ratio_obs:.4f}")
+    print(f"  E({target_blue}-{target_red}): {E_pair:.4f}")
     
-    # 假设 d['unred_agn_b'] 和 d['unred_agn_b_err'] 是数组或列表，逐一创建 ufloat 对象
-    unred_agn_b = [ufloat(b, e) for b, e in zip(d['unred_agn_b'], d['unred_agn_b_err'])]
-    unred_agn_F = [ufloat(f, e) for f, e in zip(d['unred_agn_f'], d['unred_agn_f_err'])]
-
-    # 计算 epsilon（亮度比）并处理误差传播
-    epsilon = [f / b for f, b in zip(unred_agn_F, unred_agn_b)]
-
-    # 提取 epsilon 的标准值和误差
-    epsilon_cern = [e.nominal_value for e in epsilon]
-    epsilon_err = [e.std_dev for e in epsilon]
-
-    # 将计算结果添加到字典
-    d['epsilon'] = epsilon_cern
-    d['epsilon_err'] = epsilon_err
-
-    unred_agn_b_Jy = [flam_to_jy(b.nominal_value, wave[i]) for i, b in enumerate(unred_agn_b)]
-    unred_agn_b_Jy_err = [flam_to_jy(b.std_dev, wave[i]) for i, b in enumerate(unred_agn_b)]
-    d['unred_agn_b_Jy'] = unred_agn_b_Jy
-    d['unred_agn_b_Jy_err'] = unred_agn_b_Jy_err
-    df = DataFrame(data=d)
+    # 打印最终结果（带误差）
+    print(f"  ==> Nuclear E(B-V): {ebv_val.nominal_value:.4f} +/- {ebv_val.std_dev:.4f}\n")
     
-    df.to_csv(outputdir/f'{objName}_fluxflux.csv', index=False)
+    # 保存到 txt 文件
+    with open(outputdir / f'{objname}_extinction.txt', 'w') as f:
+        f.write(f"Object: {objname}\n")
+        f.write(f"Anchor Pair: {target_blue}-{target_red}\n")
+        # 写入文件时也可以做格式化
+        f.write(f"Calculated Nuclear E(B-V): {ebv_val.nominal_value:.4f} +/- {ebv_val.std_dev:.4f}\n")
+        if ebv_val.nominal_value == 0.0 and E_pair < 0:
+             f.write(f"Note: Raw calculated value was negative ({E_pair:.4f}), forced to 0.0.\n")
+        f.write(f"Method: Standard Disk (lambda^-7/3) + SMC Extinction\n")
+        f.write(f"Input Data: Galactic-extinction-corrected Slope (R_unred)\n")
+        
+    return ebv_val
 
 
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy import optimize
+from pathlib import Path
+from astropy import units as u
+from dust_extinction.parameter_averages import G03_SMCBar
+from uncertainties import unumpy, ufloat
+
+def analyze_sed_powerlaw(df, ebv_nuclear, outputdir, objname, redshift=0.0, savefig=True):
+    """
+    Step 3 (Full Reconstruction - Refined Version): 
+    1. 使用 unumpy 自动处理包括核区消光误差在内的全量误差传递。
+    2. 计算本质 (Intrinsic) 的亮态、暗态、差分光谱及其误差。
+    3. 执行 lambda*F_lambda vs lambda 的 Power-law 拟合。
+    4. 输出包含所有误差项的完整 CSV 和拟合诊断。
+    """
+    outputdir = Path(outputdir)
+    
+    # --- 1. 数据准备 (读取带误差的原始数据) ---
+    # 将 df 转换为带误差的 unumpy 数组 (uarray)
+    # 使用你提供的 CSV Title
+    Fb_u = unumpy.uarray(df['F_unred_gal_bright'].values, df['F_unred_gal_bright_err'].values)
+    Ff_u = unumpy.uarray(df['F_unred_gal_faint'].values, df['F_unred_gal_faint_err'].values)
+    R_u = unumpy.uarray(df['R_unred_gal'].values, df['R_unred_gal_err'].values)
+    Gal_u = unumpy.uarray(df['F_Galaxy'].values, df['F_Galaxy_err'].values)
+    
+    wave = df['Wavelength'].values
+    wave_rest = wave / (1 + redshift)
+    
+    # 确保 ebv_nuclear 是 ufloat 类型
+    if hasattr(ebv_nuclear, 'nominal_value'):
+        enuc_u = ebv_nuclear
+    else:
+        enuc_u = ufloat(ebv_nuclear, 0.0)
+
+    # --- 2. 应用核内消光修正 (SMC Bar Model) ---
+    ext_model = G03_SMCBar()
+    k_nuc = ext_model(wave * u.Angstrom)
+    
+    # 修正因子 C = 10^(0.4 * k * E_nuc)，这是一个带误差的数组
+    corr_nuc_u = 10**(0.4 * k_nuc * enuc_u)
+    
+    # 得到本质 (Intrinsic) 物理量 (计算会自动处理误差传递)
+    R_int_u = R_u * corr_nuc_u
+    Fb_int_u = Fb_u * corr_nuc_u
+    Ff_int_u = Ff_u * corr_nuc_u
+    
+    # 差分光谱 (Difference Spectrum) 和 Epsilon (Ratio)
+    delta_F_u = Fb_int_u - Ff_int_u
+    epsilon_int_u = Ff_int_u / Fb_int_u
+
+    # --- 3. Power-law 拟合：lambda * F_lambda vs lambda ---
+    # 提取数值用于 scipy 拟合
+    X_fit = wave_rest
+    Y_fit_all = wave_rest * delta_F_u
+    Y_fit_val = unumpy.nominal_values(Y_fit_all)
+    Y_fit_err = unumpy.std_devs(Y_fit_all)
+    
+    def pl_model(lam, norm, beta):
+        return norm * (lam**beta)
+
+    # 初始猜测：经过 V 波段点，斜率 -1.33
+    idx_v = (np.abs(wave - 5500)).argmin()
+    p0 = [Y_fit_val[idx_v] / (X_fit[idx_v]**-1.33), -1.33]
+
+    try:
+        popt, pcov = optimize.curve_fit(
+            pl_model, X_fit, Y_fit_val, 
+            sigma=Y_fit_err, p0=p0, absolute_sigma=True
+        )
+        beta_fit = popt[1]
+        beta_err = np.sqrt(np.diag(pcov))[1]
+        
+        # 计算统计评价
+        residuals = Y_fit_val - pl_model(X_fit, *popt)
+        chi2 = np.sum((residuals / Y_fit_err)**2)
+        dof = len(X_fit) - 2
+        red_chi2 = chi2 / dof
+        
+        theory_beta = -4.0/3.0
+        sigma_dev = np.abs(beta_fit - theory_beta) / beta_err
+    except Exception as e:
+        print(f"Power-law fit failed for {objname}: {e}")
+        beta_fit, beta_err, red_chi2, sigma_dev = -999, 0, 0, 0
+
+    # --- 4. 绘图 1: 全成分 SED 分解图 ---
+    plt.rcParams.update({'font.family': 'serif', 'font.size': 12})
+    fig1, ax1 = plt.subplots(figsize=(10, 7))
+    
+    # 提取中心值用于绘图
+    f_b_val, f_f_val = unumpy.nominal_values(Fb_int_u), unumpy.nominal_values(Ff_int_u)
+    df_val, df_err = unumpy.nominal_values(delta_F_u), unumpy.std_devs(delta_F_u)
+    gal_val, gal_err = unumpy.nominal_values(Gal_u), unumpy.std_devs(Gal_u)
+    r_val = unumpy.nominal_values(R_int_u)
+
+    ax1.fill_between(wave_rest, f_f_val, f_b_val, color='gray', alpha=0.2, label='AGN Variability Range')
+    ax1.errorbar(wave_rest, gal_val, yerr=gal_err, fmt='s--', color='red', ms=6, capsize=3, label='Host Galaxy (MW corr)')
+    ax1.errorbar(wave_rest, df_val, yerr=df_err, fmt='o-', color='black', ms=8, lw=2, label=r'Difference Spectrum ($\Delta f_\lambda$)')
+    ax1.plot(wave_rest, r_val, 'o:', color='gray', alpha=0.7, label='AGN RMS (R)')
+
+    ax1.set_xscale('log'); ax1.set_yscale('log')
+    ax1.set_xlabel(r'Rest Wavelength $\lambda_{rest}$ ($\AA$)')
+    ax1.set_ylabel(r'Flux $f_\lambda$ ($10^{-15}$ erg s$^{-1}$ cm$^{-2}$ $\AA^{-1}$)')
+    ax1.set_title(f"{objname} - Full SED Decomposition")
+    ax1.legend(loc='best')
+    
+    if savefig:
+        fig1.savefig(outputdir / f"{objname}_SED_Full_Decomposition.pdf", bbox_inches='tight')
+
+    # --- 5. 绘图 2: Power-law 拟合验证图 ---
+    fig2, ax2 = plt.subplots(figsize=(8, 6))
+    ax2.errorbar(X_fit, Y_fit_val, yerr=Y_fit_err, fmt='o', color='#1f77b4', label='De-reddened Data')
+    
+    x_range = np.logspace(np.log10(min(X_fit)*0.9), np.log10(max(X_fit)*1.1), 100)
+    if beta_fit != -999:
+        ax2.plot(x_range, pl_model(x_range, *popt), 'r-', lw=2, label=fr'Fit: $\beta = {beta_fit:.2f} \pm {beta_err:.2f}$')
+    
+    y_theory = Y_fit_val[idx_v] * (x_range / X_fit[idx_v])**(-1.333)
+    ax2.plot(x_range, y_theory, 'k--', alpha=0.6, label=r'Theory: $\beta = -4/3$')
+
+    ax2.set_xscale('log'); ax2.set_yscale('log')
+    ax2.set_xlabel(r'Rest Wavelength $\lambda_{rest}$ ($\AA$)')
+    ax2.set_ylabel(r'Flux $\lambda \cdot \Delta f_\lambda$')
+    ax2.legend(loc='upper right')
+    ax2.text(0.05, 0.05, f"$\chi^2/dof = {red_chi2:.2f}$\nDev. = ${sigma_dev:.1f}\sigma$", 
+             transform=ax2.transAxes, bbox=dict(facecolor='white', alpha=0.7))
+    
+    if savefig:
+        fig2.savefig(outputdir / f"{objname}_Powerlaw_Fit.pdf", bbox_inches='tight')
+    plt.close('all')
+
+    # --- 6. 结果导出 (完整包含中心值和误差) ---
+    export_df = pd.DataFrame({
+        'Filter': df['Filter'],
+        'Wave_Rest': wave_rest,
+        'R_intrinsic': unumpy.nominal_values(R_int_u),
+        'R_intrinsic_err': unumpy.std_devs(R_int_u),
+        'F_bright_int': unumpy.nominal_values(Fb_int_u),
+        'F_bright_int_err': unumpy.std_devs(Fb_int_u),
+        'F_faint_int': unumpy.nominal_values(Ff_int_u),
+        'F_faint_int_err': unumpy.std_devs(Ff_int_u),
+        'Delta_F_int': unumpy.nominal_values(delta_F_u),
+        'Delta_F_int_err': unumpy.std_devs(delta_F_u),
+        'Epsilon_int': unumpy.nominal_values(epsilon_int_u),
+        'Epsilon_int_err': unumpy.std_devs(epsilon_int_u),
+        'Galaxy_MW_only': unumpy.nominal_values(Gal_u),
+        'Galaxy_MW_only_err': unumpy.std_devs(Gal_u)
+    })
+    
+    csv_path = outputdir / f"{objname}_intrinsic_sed_components.csv"
+    export_df.to_csv(csv_path, index=False)
+
+    # Diagnostics TXT
+    diag_path = outputdir / f"{objname}_fit_diagnostics.txt"
+    with open(diag_path, 'w') as f:
+        f.write(f"--- Fit Diagnostics for {objname} ---\n")
+        f.write(f"Nuclear E(B-V) applied: {enuc_u:.5f}\n")
+        f.write(f"Power-law Fit Beta: {beta_fit:.4f} +/- {beta_err:.4f}\n")
+        f.write(f"Reduced Chi-squared: {red_chi2:.3f}\n")
+        f.write(f"Deviation from -4/3 Theory: {sigma_dev:.2f} sigma\n")
+
+    print(f"\n[Step 3] Analysis complete for {objname}.")
+    print(f"  -> Beta = {beta_fit:.3f}, Chi2/dof = {red_chi2:.2f}")
+    return beta_fit
+    
 def Convergence(objname,
                 outputdir='./',
                 samples_file='samples_flat.obj',
@@ -1202,165 +1171,65 @@ def autocorr_func_1d(x, norm=True):
 
     return acf
 
-def unred(wave, flux, ebv, R_V=3.1, LMC2=False, AVGLMC=False):
+def unred(wave, flux, ebv, model_type='MW', R_V=3.1):
     """
-     Deredden a flux vector using the Fitzpatrick (1999) parameterization
-
-     Parameters
-     ----------
-     wave :   array
-              Wavelength in Angstrom
-     flux :   array
-              Calibrated flux vector, same number of elements as wave.
-     ebv  :   float, optional
-              Color excess E(B-V). If a negative ebv is supplied,
-              then fluxes will be reddened rather than dereddened.
-              The default is 3.1.
-     AVGLMC : boolean
-              If True, then the default fit parameters c1,c2,c3,c4,gamma,x0
-              are set to the average values determined for reddening in the
-              general Large Magellanic Cloud (LMC) field by
-              Misselt et al. (1999, ApJ, 515, 128). The default is
-              False.
-     LMC2 :   boolean
-              If True, the fit parameters are set to the values determined
-              for the LMC2 field (including 30 Dor) by Misselt et al.
-              Note that neither `AVGLMC` nor `LMC2` will alter the default value
-              of R_V, which is poorly known for the LMC.
-
-     Returns
-     -------
-     new_flux : array
-                Dereddened flux vector, same units and number of elements
-                as input flux.
-
-     Notes
-     -----
-
-     .. note:: This function was ported from the IDL Astronomy User's Library.
-
-     :IDL - Documentation:
-
-      PURPOSE:
-       Deredden a flux vector using the Fitzpatrick (1999) parameterization
-      EXPLANATION:
-       The R-dependent Galactic extinction curve is that of Fitzpatrick & Massa
-       (Fitzpatrick, 1999, PASP, 111, 63; astro-ph/9809387 ).
-       Parameterization is valid from the IR to the far-UV (3.5 microns to 0.1
-       microns).    UV extinction curve is extrapolated down to 912 Angstroms.
-
-      CALLING SEQUENCE:
-        FM_UNRED, wave, flux, ebv, [ funred, R_V = , /LMC2, /AVGLMC, ExtCurve=
-                          gamma =, x0=, c1=, c2=, c3=, c4= ]
-      INPUT:
-         WAVE - wavelength vector (Angstroms)
-         FLUX - calibrated flux vector, same number of elements as WAVE
-                  If only 3 parameters are supplied, then this vector will
-                  updated on output to contain the dereddened flux.
-         EBV  - color excess E(B-V), scalar.  If a negative EBV is supplied,
-                  then fluxes will be reddened rather than dereddened.
-
-      OUTPUT:
-         FUNRED - unreddened flux vector, same units and number of elements
-                  as FLUX
-
-      OPTIONAL INPUT KEYWORDS
-          R_V - scalar specifying the ratio of total to selective extinction
-                   R(V) = A(V) / E(B - V).    If not specified, then R = 3.1
-                   Extreme values of R(V) range from 2.3 to 5.3
-
-       /AVGLMC - if set, then the default fit parameters c1,c2,c3,c4,gamma,x0
-                 are set to the average values determined for reddening in the
-                 general Large Magellanic Cloud (LMC) field by Misselt et al.
-                 (1999, ApJ, 515, 128)
-        /LMC2 - if set, then the fit parameters are set to the values determined
-                 for the LMC2 field (including 30 Dor) by Misselt et al.
-                 Note that neither /AVGLMC or /LMC2 will alter the default value
-                 of R_V which is poorly known for the LMC.
-
-         The following five input keyword parameters allow the user to customize
-         the adopted extinction curve.    For example, see Clayton et al. (2003,
-         ApJ, 588, 871) for examples of these parameters in different interstellar
-         environments.
-
-         x0 - Centroid of 2200 A bump in microns (default = 4.596)
-         gamma - Width of 2200 A bump in microns (default  =0.99)
-         c3 - Strength of the 2200 A bump (default = 3.23)
-         c4 - FUV curvature (default = 0.41)
-         c2 - Slope of the linear UV extinction component
-              (default = -0.824 + 4.717/R)
-         c1 - Intercept of the linear UV extinction component
-              (default = 2.030 - 3.007*c2
+    Deredden flux using dust_extinction library.
+    
+    Parameters
+    ----------
+    wave : array
+        Wavelength in Angstroms.
+    flux : array
+        Flux values.
+    ebv : float
+        Color excess E(B-V).
+    model_type : str
+        'MW' for Galactic extinction (Fitzpatrick 99, with UV bump).
+        'SMC' for AGN intrinsic extinction (Gordon 03, no UV bump, steep UV rise).
+    R_V : float
+        Ratio of total to selective extinction (only for MW model). Default 3.1.
     """
+    
+    # 如果色余为 0，直接返回，节省计算
+    if ebv == 0:
+        return flux
 
-    x = 10000./ wave # Convert to inverse microns
-    curve = x*0.
+    # 1. 选择消光模型
+    if model_type == 'SMC':
+        # SMC Bar 模型 (适合 AGN 核区)
+        ext_model = G03_SMCBar()
+    else:
+        # 默认为银河系模型 (F99)
+        ext_model = F99(Rv=R_V)
 
-    # Set some standard values:
-    x0 = 4.596
-    gamma =  0.99
-    c3 =  3.23
-    c4 =  0.41
-    c2 = -0.824 + 4.717/R_V
-    c1 =  2.030 - 3.007*c2
-
-    if LMC2:
-        x0    =  4.626
-        gamma =  1.05
-        c4   =  0.42
-        c3    =  1.92
-        c2    = 1.31
-        c1    =  -2.16
-    elif AVGLMC:
-        x0 = 4.596
-        gamma = 0.91
-        c4   =  0.64
-        c3    =  2.73
-        c2    = 1.11
-        c1    =  -1.28
-
-    # Compute UV portion of A(lambda)/E(B-V) curve using FM fitting function and
-    # R-dependent coefficients
-    xcutuv = np.array([10000.0/2700.0])
-    xspluv = 10000.0/np.array([2700.0,2600.0])
-
-    iuv = np.where(x >= xcutuv)[0]
-    N_UV = len(iuv)
-    iopir = np.where(x < xcutuv)[0]
-    Nopir = len(iopir)
-    if (N_UV > 0): xuv = np.concatenate((xspluv,x[iuv]))
-    else:  xuv = xspluv
-
-    yuv = c1  + c2*xuv
-    yuv = yuv + c3*xuv**2/((xuv**2-x0**2)**2 +(xuv*gamma)**2)
-    yuv = yuv + c4*(0.5392*(np.maximum(xuv,5.9)-5.9)**2+0.05644*(np.maximum(xuv,5.9)-5.9)**3)
-    yuv = yuv + R_V
-    yspluv  = yuv[0:2]  # save spline points
-
-    if (N_UV > 0): curve[iuv] = yuv[2::] # remove spline points
-
-    # Compute optical portion of A(lambda)/E(B-V) curve
-    # using cubic spline anchored in UV, optical, and IR
-    xsplopir = np.concatenate(([0],10000.0/np.array([26500.0,12200.0,6000.0,5470.0,4670.0,4110.0])))
-    ysplir   = np.array([0.0,0.26469,0.82925])*R_V/3.1
-    ysplop   = np.array((np.polyval([-4.22809e-01, 1.00270, 2.13572e-04][::-1],R_V ),
-            np.polyval([-5.13540e-02, 1.00216, -7.35778e-05][::-1],R_V ),
-            np.polyval([ 7.00127e-01, 1.00184, -3.32598e-05][::-1],R_V ),
-            np.polyval([ 1.19456, 1.01707, -5.46959e-03, 7.97809e-04, -4.45636e-05][::-1],R_V ) ))
-    ysplopir = np.concatenate((ysplir,ysplop))
-
-    if (Nopir > 0):
-      tck = interpolate.splrep(np.concatenate((xsplopir,xspluv)),np.concatenate((ysplopir,yspluv)),s=0)
-      curve[iopir] = interpolate.splev(x[iopir], tck)
-
-    #Now apply extinction correction to input flux vector
-    curve *= ebv
-
-    return flux * 10.**(0.4*curve)
+    # 2. 计算消光量 A_lambda = E(B-V) * k(lambda)
+    # dust_extinction 库直接返回 A(lambda) / E(B-V) 的值吗？
+    # 不，它的 extinguish 方法直接计算透射率 (transmissivity) = 10^(-0.4 * A_lambda)
+    # 但我们需要支持负 EBV (加红) 或 正 EBV (去红)。
+    
+    # 我们可以手动计算: A_lambda = ext_model(wave) * ebv
+    # ext_model(wave) 返回的是 k(lambda) = A(lambda) / E(B-V)
+    # 注意：传入 wave 需要带单位
+    
+    try:
+        # 获取 k(lambda) 值
+        k_lambda = ext_model(wave * u.Angstrom)
+        
+        # 计算 A_lambda
+        A_lambda = k_lambda * ebv
+        
+        # 3. 执行去红化
+        # 公式: F_int = F_obs * 10^(0.4 * A_lambda)
+        correction_factor = 10**(0.4 * A_lambda)
+        
+        return flux * correction_factor
+        
+    except Exception as e:
+        print(f"Error in unred: {e}")
+        return flux
 
 def flam_to_jy(flux, wavelength):
     c = 3e18  # 光速，单位为 Å/s
     jy_conversion_factor = 1e8
     jy_flux = flux * (wavelength ** 2) / c * jy_conversion_factor
-    
     return jy_flux

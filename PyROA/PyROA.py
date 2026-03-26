@@ -219,6 +219,9 @@ def CalculatePorc(t_data, Flux, Flux_err, delta, memfunction = 'gaussian'):
 
 
 
+
+# Block2: Core ROA Engine
+
 @jit(nopython=True, cache=False, parallel=False)
 def RunningOptimalAverage(t_data, Flux, Flux_err, delta,memfunction, gridsize):
     #Inputs
@@ -485,10 +488,6 @@ def RunningOptimalAverageConv(t_data, Flux, Flux_err, deltas, factors, conv, t):
 
 
 
-
-
-
-
 @jit(nopython=True, cache=False, parallel=False)
 def RunningOptimalAverageOutConv(mjd, t_data, Flux, Flux_err, factors, conv, prev, t, delta):
     #Inputs
@@ -561,20 +560,6 @@ def RunningOptimalAverageOutConv(mjd, t_data, Flux, Flux_err, factors, conv, pre
 
     return mjd, model, errs
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 @jit(nopython=True, cache=False, parallel=False)
 def CalculateP(t_data, Flux, Flux_err, delta,memfunction):
 
@@ -632,7 +617,7 @@ def CalculateP(t_data, Flux, Flux_err, delta,memfunction):
 
     return np.nansum(Ps)
     
-
+# Block2:End of Core ROA Engine
     
     
 
@@ -1136,38 +1121,46 @@ def Slow(t, S0, dS, t0):
     return S0 + dS*(((t -t0)**2.0))
      
 
-def FullFit(data, outputdir, objName, priors, init_tau, init_delta, add_var, sig_level, Nsamples, 
+def FullFit(data, outputdir, objname, priors, init_tau, init_delta, add_var, sig_level, Nsamples, 
             Nburnin, include_slow_comp, slow_comp_delta, calc_P, delay_dist,
             psi_types, pos_ref, AccDisc, wavelengths, filters, use_backend, 
-            resume_progress, plot_corner,memfunction, gridsize):
+            resume_progress, plot_corner,memfunction, gridsize, fix_tau = False):
 
     
-    Nchunk = 2
-    if (AccDisc == False):
-        Nchunk+=1
-    
+    Nchunk = 2  # A 和 B
+    if (AccDisc == False and not fix_tau):
+        Nchunk += 1  # 只有不固定时，参数块里才有 tau
+
     if (add_var == True):
-        Nchunk +=1
-    if (delay_dist == True and AccDisc == False):
-        Nchunk+=1
-        param_delete=2
-    else:
-        param_delete=1
-        
-        
-        
+        Nchunk += 1  # 额外方差 V
 
-    Npar =  Nchunk*len(data) + 1    
-    if (AccDisc==True):
-        Npar =  Nchunk*len(data) + 3    
-        param_delete=0
-        delta = 0.0
-       # import warnings
-       # warnings.filterwarnings("ignore")
+    # 2. 计算需要“物理删除”的数量 (param_delete)
+    if (AccDisc == True):
+        param_delete = 0  # 吸积盘模式逻辑不同，不在这里删除
+    else:
+        # 基础删除量
+        p_del = 0
+        
+        # 如果 tau 是自由参数，我们需要删掉参考波段的那 1 个 tau
+        if not fix_tau:
+            p_del += 1
+            
+        # 处理延迟分布 (delay_dist)
+        if (delay_dist == True):
+            Nchunk += 1   # 参数块里增加 Width
+            p_del += 1    # 物理删除参考波段的 Width (索引逻辑在后面)
+        
+        param_delete = p_del
+
+    # 3. 最后计算总参数量 Npar
+    Npar = Nchunk * len(data) + 1  # +1 是全局的平滑参数 delta
+    if (AccDisc == True):
+        Npar = Nchunk * len(data) + 3 # T1, beta, delta
+
     ########################################################################################    
     #Run MCMC to fit to data
-    
     #Choose intial conditions from mean and rms of data
+    
     pos = [0]*Npar
     labels = [None]*Npar
     chunk_size = Nchunk#int((Npar - 1)/len(data))
@@ -1184,6 +1177,7 @@ def FullFit(data, outputdir, objName, priors, init_tau, init_delta, add_var, sig
     merged_flux = []
     merged_err = []
     sizes = np.zeros(int(len(data)+1))
+
     for i in range(len(data)):
         mjd = data[i][:,0]
         flux = data[i][:,1]
@@ -1239,6 +1233,7 @@ def FullFit(data, outputdir, objName, priors, init_tau, init_delta, add_var, sig
                        
         labels_chunks[i][0] = "A"+str(i)
         labels_chunks[i][1] = "B"+str(i)
+        
         if (AccDisc == False):        
             labels_chunks[i][2] = "\u03C4" + str(i)
             pos_chunks[i][2] = init_tau[i]
@@ -1282,12 +1277,7 @@ def FullFit(data, outputdir, objName, priors, init_tau, init_delta, add_var, sig
             #m_sl = Slow(np.linspace(59100, 59500, 1000), params[0], params[1],params[2]) - np.mean(m_sl)            
             slow_comps.append([t_sl, m_sl, errs_sl])
             P_slow[i] = CalculateP(data[i][:,0], data[i][:,1], data[i][:,2], slow_comp_delta,memfunction)
-            
-
-   
-                        
-
-
+                    
     if (AccDisc == True):
         pos_chunks[-1][0] = 1.0e4
         labels_chunks[-1][0] = "T1"
@@ -1390,15 +1380,36 @@ def FullFit(data, outputdir, objName, priors, init_tau, init_delta, add_var, sig
 
     #print(np.array(pos))
     outputdir = Path(outputdir)  # 在 FullFit 开头统一 Path 一下
-    np.savetxt(outputdir / f'{objName}_test_initial_points.txt', pos.T)
+    np.savetxt(outputdir / f'{objname}_test_initial_points.txt', pos.T)
     nwalkers, ndim = pos.shape
-    #Backend
+    # Backend
+# 修改后的代码
     if (use_backend == True):
         filename = outputdir/"Fit.h5"
         backend = emcee.backends.HDFBackend(str(filename))
+        
+        if (resume_progress == False):
+            print("--- 重新开始采样，重置 Backend ---")
+            backend.reset(nwalkers, ndim)
+            
         if (resume_progress == True):
-            print("Backend size: {0}".format(backend.iteration))
-            pos = None
+            it = int(backend.iteration)
+            print(f"--- 续传模式启动，当前进度: {it} ---")
+            
+            if it > 0:
+                # 1. 强行读取 H5 文件里保存的最后一步 Walker 位置
+                last_sample = backend.get_last_sample()
+                h5_pos = last_sample.coords
+                
+                # 2. 【关键】增加随机扰动 (Kick)
+                # 使用 psize (参数范围) 的万分之一作为扰动标准差
+                # 这样既能把挤在一起的 Walker 推开，又不会破坏它们已经找到的似然峰值
+                # print("正在为续传点添加随机扰动以防止线性相关报错...")
+                # noise = 1e-5 * np.random.standard_normal(h5_pos.shape) * psize
+                pos = h5_pos #+ noise
+            else:
+                print("警告：H5 文件为空，无法续传，将使用初始随机位置。")
+                # 这里的 pos 保持为函数开头生成的那个随机初始列表
     else:
         backend = None
     
@@ -1407,13 +1418,12 @@ def FullFit(data, outputdir, objName, priors, init_tau, init_delta, add_var, sig
         sampler = emcee.EnsembleSampler(nwalkers, ndim, log_probability, args=[data, priors, add_var, size,sig_level, include_slow_comp, 
                                         slow_comp_delta, P_func, slow_comps, P_slow, init_delta, delay_dist, psi_types, 
                                         pos_ref, AccDisc, wavelengths, integral, integral2, init_params_chunks,memfunction, gridsize], pool=pool, backend=backend)
-        sampler.run_mcmc(pos, Nsamples, progress=True)
+        sampler.run_mcmc(pos, Nsamples, progress=True, thin=50)
+        tau = sampler.get_autocorr_time(quiet=True)
+        print(f"平均自相关时间: {np.mean(tau)}")
 
-    #Extract samples with burn-in of 1000
-    samples_flat = sampler.get_chain(discard=Nburnin, thin=15, flat=True)
-
-         
-    samples = sampler.get_chain()
+        samples_flat = sampler.get_chain(discard=int(Nburnin/50), thin=1, flat=True)
+        samples = sampler.get_chain()
 
     
 
@@ -1705,20 +1715,20 @@ def FullFit(data, outputdir, objName, priors, init_tau, init_delta, add_var, sig
     table = [params]
     print(tabulate(table, headers=labels))
     
-    with open(outputdir / f"{objName}_samples_flat.obj", "wb") as f:
+    with open(outputdir / f"{objname}_samples_flat.obj", "wb") as f:
         pickle.dump(samples_flat, f)
 
-    with open(outputdir / f"{objName}_samples.obj", "wb") as f:
+    with open(outputdir / f"{objname}_samples.obj", "wb") as f:
         pickle.dump(samples, f)
 
-    with open(outputdir / f"{objName}_X_t.obj", "wb") as f:
+    with open(outputdir / f"{objname}_X_t.obj", "wb") as f:
         pickle.dump([t, m, errs], f)
 
     if include_slow_comp:
-        with open(outputdir / f"{objName}_Slow_Comps.obj", "wb") as f:
+        with open(outputdir / f"{objname}_Slow_Comps.obj", "wb") as f:
             pickle.dump(slow_comps_out, f)
 
-    with open(outputdir / f"{objName}_Lightcurve_models.obj", "wb") as f:
+    with open(outputdir / f"{objname}_Lightcurve_models.obj", "wb") as f:
         pickle.dump(models, f)
 
     
@@ -1749,7 +1759,7 @@ class Fit():
         
     datadir : str
         Directory where the data is stored.
-    objName : str
+    objname : str
         Name used in PyROA for the data files.
     filters : list
         List of filters used in the PyROA fit.
@@ -1814,99 +1824,87 @@ class Fit():
             - lorentzian: Lorentzian function
             - boxcar: Boxcar function
     """
-    def __init__(self, datadir, outputdir, objName, filters, priors, delay_ref = None, init_tau = None, init_delta=1.0,
-                 delay_dist=False , psi_types = None, add_var=True, sig_level = 4.0, 
-                 Nsamples=10000, Nburnin=0, include_slow_comp=False, slow_comp_delta=30.0, 
-                 calc_P=False, AccDisc=False, wavelengths=None, 
-                 use_backend = False, resume_progress = False, plot_corner=False,memfunction='gaussian', gridsize = None, fix_tau = False, fixed_tau_val = None):
-        
-        datadir = Path(datadir)
-        self.datadir=datadir
-        self.objName=objName
-        self.filters=filters
-        self.gridsize = gridsize
-        self.outputdir = outputdir
-        data=[]
-        for flt in self.filters:
-            file = self.datadir/f"{self.objName}_{flt}.dat"
-            data.append(np.loadtxt(str(file)))
+    def __init__(self, datadir, outputdir, objname, filters, priors, delay_ref = None, init_tau = None, init_delta=1.0,
+                    delay_dist=False , psi_types = None, add_var=True, sig_level = 4.0, 
+                    Nsamples=10000, Nburnin=0, include_slow_comp=False, slow_comp_delta=30.0, 
+                    calc_P=False, AccDisc=False, wavelengths=None, 
+                    use_backend = True, resume_progress = True, plot_corner=False, memfunction='gaussian', gridsize = None, fix_tau = False):
+            
+            # 基础配置并加载数据
+            datadir = Path(datadir)
+            self.datadir = datadir
+            self.objname = objname
+            self.filters = filters
+            self.gridsize = gridsize
+            self.outputdir = Path(outputdir)
+            data = []
+            for flt in self.filters:
+                file = self.datadir / f"{self.objname}_{flt}.dat"
+                data.append(np.loadtxt(str(file)))
+            
+            self.priors = priors
+            self.init_tau = init_tau
+            self.init_delta = init_delta
+            self.fix_tau = fix_tau
+            self.add_var = add_var
+            self.delay_dist = delay_dist
 
-           # np.savetxt(datadir + str(self.objName) +"_"+ str(self.filters[i]) + ".dat",np.transpose([data[i][:,0], data[i][:,1], data[i][:,2]]))
-            
-            
-        
-        self.priors= priors
-        self.init_tau = init_tau
-        self.init_delta=init_delta
-        
-       # if (add_var == True):
-          #  self.add_var = [True]*len(filters)
-       # elif (add_var == False):
-         #   self.add_var = [False]*len(filters)
-     #   else:
-        self.add_var = add_var
-            
-            
-        self.delay_dist = delay_dist
-        if (delay_dist==True):
-            self.psi_types = psi_types
-            if (psi_types==None):
-                self.psi_types = ["Gaussian"]*len(filters)
-            else:
-                self.psi_types = np.insert(psi_types, [0], psi_types[0])
-        else:
-            self.psi_types = [None]*len(filters)
-        
-        self.sig_level = sig_level
-        self.Nsamples = Nsamples
-        self.Nburnin = Nburnin
-        
-        if (delay_ref == None):
-            self.delay_ref = filters[0]
-        else:
-            self.delay_ref = delay_ref
-        self.delay_ref_pos = np.where(np.array(filters) == self.delay_ref)[0]
-        if (init_tau == None):
-            self.init_tau = [0]*len(data)
             if (delay_dist == True):
-                self.init_tau = [1.0]*len(data)
-            if (AccDisc == True):
-                self.init_tau = 5.0*(((np.array(wavelengths)/wavelengths[0]))**1.4)
-        else:
-            Nchunk = 3
-            if (self.add_var == True):
-                Nchunk +=1
-            if (self.delay_dist == True):
-                Nchunk+=1
-        
-            self.init_tau = np.insert(init_tau, self.delay_ref_pos, 0.0)
+                self.psi_types = psi_types
+                if (psi_types == None):
+                    self.psi_types = ["Gaussian"] * len(filters)
+                else:
+                    self.psi_types = np.insert(psi_types, [0], psi_types[0])
+            else:
+                self.psi_types = [None] * len(filters)
             
-        self.include_slow_comp=include_slow_comp
-        self.slow_comp_delta=slow_comp_delta
-        
-        self.calc_P=calc_P
-        self.AccDisc = AccDisc
-        self.wavelengths = wavelengths
-        self.use_backend = use_backend
-        self.resume_progress = resume_progress
+            self.sig_level = sig_level
+            self.Nsamples = Nsamples
+            self.Nburnin = Nburnin 
 
-        if fix_tau and (fixed_tau_val is None):
-            raise ValueError("如果 fix_tau=True，必须提供 fixed_tau_values！")
-        run = FullFit(data, outputdir, objName, self.priors, self.init_tau, self.init_delta, self.add_var, 
-                      self.sig_level, self.Nsamples, self.Nburnin, self.include_slow_comp, 
-                      self.slow_comp_delta, self.calc_P, self.delay_dist, self.psi_types, 
-                      self.delay_ref_pos, self.AccDisc, self.wavelengths, self.filters, 
-                      self.use_backend, self.resume_progress,plot_corner,memfunction, self.gridsize, fix_tau, fixed_tau_values)
+            if (delay_ref == None):
+                self.delay_ref = filters[0]
+            else:
+                self.delay_ref = delay_ref
+            self.delay_ref_pos = np.where(np.array(filters) == self.delay_ref)[0]
 
-        self.samples = run[0]
-        self.samples_flat = run[1]
-        self.t = run[2]
-        self.X = run[3]
-        self.X_errs = run[4]
-        if (self.include_slow_comp==True):
-            self.slow_comps=run[5]
-        self.params=run[6]
-        self.models = run[7]
+            if (init_tau == None):
+                self.init_tau = [0] * len(data)
+                if (delay_dist == True):
+                    self.init_tau = [1.0] * len(data)
+                if (AccDisc == True):
+                    self.init_tau = 5.0 * (((np.array(wavelengths) / wavelengths[0]))**1.4)
+            else:
+                self.init_tau = np.insert(init_tau, self.delay_ref_pos, 0.0)
+                
+            self.include_slow_comp = include_slow_comp
+            self.slow_comp_delta = slow_comp_delta
+            self.calc_P = calc_P
+            self.AccDisc = AccDisc
+            self.wavelengths = wavelengths
+
+            # 自动逻辑：强制开启后端，检测文件自动续传
+            self.use_backend = True
+            h5_file = self.outputdir / "Fit.h5"
+            self.resume_progress = h5_file.exists() and h5_file.stat().st_size > 0
+            if self.resume_progress:
+                print(f"INFO: {h5_file} found, auto-resuming MCMC.")
+
+            run = FullFit(data, str(self.outputdir), objname, self.priors, self.init_tau, self.init_delta, self.add_var, 
+                        self.sig_level, self.Nsamples, self.Nburnin, self.include_slow_comp, 
+                        self.slow_comp_delta, self.calc_P, self.delay_dist, self.psi_types, 
+                        self.delay_ref_pos, self.AccDisc, self.wavelengths, self.filters, 
+                        self.use_backend, self.resume_progress, plot_corner, memfunction, self.gridsize, fix_tau)
+            
+            self.samples = run[0]
+            self.samples_flat = run[1]
+            self.t = run[2]
+            self.X = run[3]
+            self.X_errs = run[4]
+            if (self.include_slow_comp == True):
+                self.slow_comps = run[5]
+            self.params = run[6]
+            self.models = run[7]
         
         
         
@@ -1937,11 +1935,11 @@ def Plot(Fit):
 
 
     datadir =Fit.datadir
-    objName = Fit.objName
+    objname = Fit.objname
     filters=Fit.filters
     data=[]
     for i in range(len(filters)):
-        file = datadir + str(objName) +"_"+ str(filters[i]) + ".dat"
+        file = datadir + str(objname) +"_"+ str(filters[i]) + ".dat"
         data.append(np.loadtxt(file))
 
 
@@ -2571,16 +2569,16 @@ def InterCalib(data, priors, init_delta, sig_level, Nsamples, Nburnin, filter,pl
 
 
 class InterCalibrate():
-    def __init__(self, datadir, objName, filter, scopes, priors, init_delta=1.0, sig_level = 3.0,
+    def __init__(self, datadir, objname, filter, scopes, priors, init_delta=1.0, sig_level = 3.0,
                  Nsamples=15000, Nburnin=10000,plot_corner=False,memfunction='gaussian'):
         self.datadir=datadir
-        self.objName=objName
+        self.objname=objname
         self.filter=filter
         self.scopes=scopes
         scopes_array = []
         data=[]
         for i in range(len(scopes)):
-            file = datadir + str(self.objName) +"_"+ str(self.filter) + "_"+ str(self.scopes[i]) +".dat"
+            file = datadir + str(self.objname) +"_"+ str(self.filter) + "_"+ str(self.scopes[i]) +".dat"
             #Check if file is empty
             if os.stat(file).st_size == 0:
                 print("")
@@ -2622,7 +2620,7 @@ class InterCalibrate():
         print(error_j1.shape)
 
         print(" >>>>> DELTA <<<<< ",run[9])
-        #np.savetxt(datadir + str(self.objName) +"_"+ str(self.filter) +  ".dat",
+        #np.savetxt(datadir + str(self.objname) +"_"+ str(self.filter) +  ".dat",
         #            np.transpose([run[5], run[6], run[7], scopes_array, run[8], model_j1, error_j1]),
         #            fmt="%15.7f %12.6f %12.6f %15s %12.6f %12.6f %12.6f")
                     #           MJD  , Flux  , Error , scopes     , DoF   ,   Model, Error_model,
@@ -2637,7 +2635,7 @@ class InterCalibrate():
                     'f5':model_j1,
                     'f6':error_j1
                     })
-        df.to_csv(datadir + str(self.objName) +"_"+ str(self.filter) +  ".dat",
+        df.to_csv(datadir + str(self.objname) +"_"+ str(self.filter) +  ".dat",
                 header=False,sep=' ',float_format='%25.15e',index=False,
                 quoting=csv.QUOTE_NONE,escapechar=' ')
 
@@ -3243,13 +3241,13 @@ def MagToFlux(mag, mag_err,flux_convert_factor):
     return flux, flux_err
 
 class GravLensFit():
-    def __init__(self, datadir, objName, images, priors, init_tau = None, init_delta=10.0, add_var=True, sig_level = 4.0, Nsamples=10000, Nburnin=5000, flux_convert_factor=3.0128e-5):
+    def __init__(self, datadir, objname, images, priors, init_tau = None, init_delta=10.0, add_var=True, sig_level = 4.0, Nsamples=10000, Nburnin=5000, flux_convert_factor=3.0128e-5):
         self.datadir=datadir
-        self.objName=objName
+        self.objname=objname
         self.images=images
         data=[]
         for i in range(len(images)):
-            file = datadir + str(self.objName) +"_"+ str(self.images[i]) + ".dat"
+            file = datadir + str(self.objname) +"_"+ str(self.images[i]) + ".dat"
             data.append(np.loadtxt(file))
             
 
@@ -3428,7 +3426,7 @@ class GravLensFit():
                     length=abs(max(delta_m)-min(delta_m))
                     axs[z].set_ylim(min(delta_m)-0.2*length, max(delta_m)+0.2*length)
                     axs[z].invert_yaxis()                  
-        axs[0].set_title(self.objName)
+        axs[0].set_title(self.objname)
         fig.show()
         i = 0
         while os.path.exists('{}{:d}.pdf'.format("GravLensPlot", i)):
